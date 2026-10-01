@@ -7,8 +7,10 @@
 <style>
   :root { color-scheme: dark; }
   body { margin: 0; font: 18px/1.5 system-ui, sans-serif; background: #15120f; color: #eee7dc;
-         display: flex; flex-direction: column; min-height: 100vh; }
-  #stage { flex: 1; display: flex; gap: 3vw; padding: 3vh 5vw 0; box-sizing: border-box; min-height: 60vh; }
+         display: flex; flex-direction: column; height: 100vh; }
+  #room { flex: 1; display: flex; min-height: 0; }
+  #presentation { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  #stage { flex: 1; display: flex; gap: 3vw; padding: 3vh 4vw 0; box-sizing: border-box; min-height: 0; }
   #text { flex: 1 1 100%; display: flex; flex-direction: column; justify-content: center; min-width: 0; }
   #stage.has-figure #text { flex-basis: 40%; }
   #fig { flex: 0 0 0; overflow: hidden; display: flex; align-items: center; justify-content: center; }
@@ -23,8 +25,29 @@
           overflow: auto; max-height: 40vh; margin: .6em 0 0; }
   #sources { color: #a08a70; font-size: 14px; margin-top: 1em; }
   #body:empty, #code:empty, #sources:empty { display: none; }
-  #caption { font-size: 24px; color: #d8cbb8; min-height: 3.2em; padding: 1.5vh 5vw 0; }
-  #bar { display: flex; gap: 12px; padding: 12px 5vw; background: #1f1a15; align-items: center; flex-wrap: wrap; }
+  #caption { font-size: 24px; color: #d8cbb8; min-height: 3.2em; padding: 1.5vh 4vw 0; }
+  #bar { display: flex; gap: 12px; padding: 12px 4vw; background: #1f1a15; align-items: center; flex-wrap: wrap; }
+  #qa { flex: 0 0 340px; display: flex; flex-direction: column; background: #1a1612; border-left: 1px solid #2f2720; }
+  #qa h2 { font-size: 15px; font-weight: 600; color: #a08a70; margin: 0; padding: 14px 16px 8px; }
+  #questions { flex: 1; overflow-y: auto; padding: 0 16px; }
+  #questions:empty::before { content: "Nothing asked yet. Ask at any time, including while the lecturer is speaking.";
+                             color: #7d6c58; font-size: 15px; }
+  .q { border-top: 1px solid #2f2720; padding: 10px 0; font-size: 15px; }
+  .q .who { color: #a08a70; }
+  .q .asked { color: #eee7dc; font-size: 16px; }
+  .q .chip { display: inline-block; margin-top: 6px; padding: 1px 8px; border-radius: 10px; font-size: 13px;
+             border: 1px solid #5a4a3a; color: #c9b79f; }
+  .q.answering .chip { border-color: #8fbf7f; color: #8fbf7f; }
+  .q.waiting .chip, .q.declined .chip { border-color: #e07a5f; color: #e0a080; }
+  .q .reply { color: #c9b79f; margin-top: 6px; white-space: pre-wrap; }
+  .q .reply:empty { display: none; }
+  #ask { display: flex; flex-direction: column; gap: 8px; padding: 12px 16px; border-top: 1px solid #2f2720; }
+  input, textarea { font: inherit; font-size: 15px; padding: 6px 10px; border-radius: 6px; border: 1px solid #5a4a3a;
+                    background: #120f0c; color: inherit; }
+  textarea { resize: none; height: 4.2em; }
+  #ask div { display: flex; gap: 8px; }
+  #ask input { flex: 1; min-width: 0; }
+  @media (max-width: 900px) { #room { flex-direction: column; } #qa { flex-basis: 40vh; border-left: 0; } }
   button { font: inherit; padding: 6px 14px; border-radius: 6px; border: 1px solid #5a4a3a; background: #2a231c; color: inherit; cursor: pointer; }
   button[hidden] { display: none; }
   #state { display: flex; align-items: center; gap: 8px; }
@@ -34,12 +57,14 @@
   .stuck #dot, .disconnected #dot { background: #e07a5f; }
   @keyframes pulse { from { opacity: .35; } to { opacity: 1; } }
   #message { color: #c9b79f; font-size: 15px; }
-  #notices { padding: 0 5vw 10px; background: #1f1a15; }
+  #notices { padding: 0 4vw 10px; background: #1f1a15; }
   #notices div { color: #e0a080; font-size: 15px; padding-top: 4px; }
 </style>
 <script src="/static/mermaid.min.js"></script>
 </head>
 <body>
+<div id="room">
+<div id="presentation">
 <div id="stage">
   <div id="text">
     <div id="place"></div>
@@ -58,9 +83,21 @@
   <button id="sound" hidden>Turn sound on</button>
   <button id="retry" hidden>Try again</button>
   <button id="start" hidden>Start</button>
+  <button id="carry" hidden>Carry on</button>
+  <button id="stop" hidden title="Stop the lecturer so it can listen">Stop</button>
   <button id="pause" hidden>Pause</button>
 </div>
 <div id="notices"></div>
+</div>
+<div id="qa">
+  <h2>Questions</h2>
+  <div id="questions"></div>
+  <form id="ask">
+    <textarea id="q" placeholder="Say anything: wait, why? · slower · is that right?" maxlength="1000"></textarea>
+    <div><input id="who" placeholder="Your name (optional)" maxlength="60"><button>Ask</button></div>
+  </form>
+</div>
+</div>
 <script>
 const $ = id => document.getElementById(id);
 mermaid.initialize({
@@ -83,8 +120,10 @@ let current = null;          // the clip playing now: {audio, timer, done}
 let soundOn = true;
 
 // What the lecturer is doing right now. Silence always has one of these beside it.
-function showState(s, message) {
+function showState(s, message, held) {
   state = s;
+  $("carry").hidden = !held;
+  $("stop").hidden = !!held || !["thinking", "speaking", "listening"].includes(s) || (place && place.floor);
   document.body.className = s;
   $("label").textContent = LABELS[s] || s;
   $("message").textContent = message || "";
@@ -102,6 +141,36 @@ function showState(s, message) {
     if (current.audio) current.audio.play().catch(() => {});
   }
   if (s === "ended" || s === "disconnected") { queue.length = 0; if (current) current.done(); }
+}
+
+// What became of each thing the room said. Every question always shows one of these.
+const QUESTION_STATES = {
+  waiting: () => "Waiting: the lecturer can't be reached",
+  heard: () => "Heard",
+  answering: () => "Being answered",
+  put_off: q => "Put off until " + q.until,
+  answered: () => "Answered",
+  declined: q => "Declined: " + q.reason,
+};
+
+function showQuestion(q) {
+  let card = $("question-" + q.id);
+  if (!card) {
+    card = document.createElement("div");
+    card.id = "question-" + q.id;
+    for (const part of ["who", "asked", "chip", "reply"]) {
+      const div = document.createElement("div");
+      div.className = part;
+      card.appendChild(div);
+    }
+    $("questions").appendChild(card);
+  }
+  card.className = "q " + q.state;
+  card.querySelector(".who").textContent = q.who || "Someone";
+  card.querySelector(".asked").textContent = q.text;
+  card.querySelector(".chip").textContent = (QUESTION_STATES[q.state] || (() => q.state))(q);
+  card.querySelector(".reply").textContent = q.reply;   // what was said out loud, kept in writing
+  card.scrollIntoView({block: "nearest"});
 }
 
 // Failures are shown where the room can see them.
@@ -195,10 +264,14 @@ function receive(ev) {
     showPlace();
     if (m.slide) showSlide(m.slide); else $("title").textContent = m.deck.subject;
     if (m.diagram) showFigure(m.diagram.code, error => send({cmd: "draw_failed", id: m.diagram.id, error}));
-    showState(m.state, m.message);
+    $("questions").textContent = "";
+    m.questions.forEach(showQuestion);
+    showState(m.state, m.message, m.held);
   }
   else if (m.type === "slide") { place = m.place; showPlace(); showSlide(m.slide); }
-  else if (m.type === "state") showState(m.state, m.message);
+  else if (m.type === "state") showState(m.state, m.message, m.held);
+  else if (m.type === "question") showQuestion(m.question);
+  else if (m.type === "stopped") { queue.length = 0; if (current) current.done(); }
   else if (m.type === "sentence") {
     const bytes = Uint8Array.from(atob(m.audio), c => c.charCodeAt(0));
     queue.push({ text: m.text, seconds: m.seconds, blob: new Blob([bytes], {type: "audio/mpeg"}) });
@@ -231,6 +304,23 @@ $("start").onclick = () => send({cmd: "start"});
 $("pause").onclick = () => send({cmd: state === "paused" ? "resume" : "pause"});
 $("retry").onclick = () => send({cmd: "retry"});
 $("sound").onclick = () => { soundOn = true; $("sound").hidden = true; };
+$("stop").onclick = () => send({cmd: "stop"});
+$("carry").onclick = () => send({cmd: "carry_on"});
+
+// Anything written here is a question. There are no commands.
+try { $("who").value = localStorage.getItem("professor.who") || ""; } catch (e) {}
+$("ask").onsubmit = ev => {
+  ev.preventDefault();
+  const text = $("q").value.trim();
+  if (!text) return;
+  const who = $("who").value.trim();
+  try { localStorage.setItem("professor.who", who); } catch (e) {}
+  send({cmd: "ask", who, text});
+  $("q").value = "";
+};
+$("q").addEventListener("keydown", ev => {
+  if (ev.key === "Enter" && !ev.shiftKey) { ev.preventDefault(); $("ask").requestSubmit(); }
+});
 </script>
 </body>
 </html>

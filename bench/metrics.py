@@ -36,8 +36,9 @@ def unexplained(events: list[dict], tolerance_s: float = 0.3) -> list[str]:
     silence while the page said "speaking", or speech while it said anything else.
 
     `events` is what bench.listener.attend recorded. Clips play back to back, each
-    starting when it has arrived and the one before it has finished. A lecture
-    that was paused can't be checked this way, because pausing stops a clip midway.
+    starting when it has arrived and the one before it has finished, and a stop
+    from a listener silences whatever is playing. A lecture that was paused can't
+    be checked this way, because pausing holds a clip midway.
     """
     marks: list[tuple[float, str, object]] = []  # (time, what changed, value)
     end = 0.0
@@ -46,6 +47,10 @@ def unexplained(events: list[dict], tolerance_s: float = 0.3) -> list[str]:
             begin = max(e["t"], end)
             end = begin + e["seconds"]
             marks += [(begin, "audio", True), (end, "audio", False)]
+        elif e["type"] == "stopped":
+            if e["t"] < end:  # the clip that was playing is cut short
+                marks = [m for m in marks if m[0] <= e["t"]] + [(e["t"], "audio", False)]
+                end = e["t"]
         elif e["type"] == "state":
             marks.append((e["t"], "state", e["state"]))
     if any(value == "paused" for _, kind, value in marks if kind == "state"):

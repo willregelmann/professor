@@ -75,8 +75,8 @@ async def test_a_three_slide_deck_plays_end_to_end():
     assert [t["sentences"] for t in turns] == [2, 2, 2] and not any(t["warnings"] for t in turns)
 
     # Reaching the end of the main line opens the floor; it doesn't end the lecture.
-    assert events[-1] == {"type": "state", "state": "listening",
-                          "message": "End of the main line. The floor is open.", "t": events[-1]["t"]}
+    assert (events[-1]["type"], events[-1]["state"], events[-1]["message"]) == (
+        "state", "listening", "End of the main line. The floor is open.")
     assert room.store.lecture(room.lecture_id)["state"] == "listening"
 
     # The lecture kept its path and its words.

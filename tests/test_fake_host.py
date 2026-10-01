@@ -40,3 +40,12 @@ async def test_running_out_of_script_is_an_error_not_silence():
     await collect(host, "one")
     with pytest.raises(RuntimeError, match="no reply scripted"):
         await collect(host, "two")
+
+
+async def test_the_notes_reader_reads_the_notes_and_owns_up_when_asked_something():
+    from professor.hosts.fake import NotesReader
+    host = NotesReader(chars_per_s=10_000)
+    slide = ("Present slide 1 of 3, \"One\". Speaker notes (cover these in your own words, about 35 seconds "
+             "of speech, then stop):\nThe notes, as written.\n\nThis diagram is ALREADY on screen")
+    assert "".join(await collect(host, slide)) == "The notes, as written."
+    assert "can't answer that" in "".join(await collect(host, "Priya asks, in the chat: Why?"))

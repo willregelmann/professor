@@ -38,7 +38,7 @@ One SQLite file, e.g. `~/.professor/professor.db`, owned by the server.
 | [Deck](invariants/primitives/DECK.md) | `decks`: id, subject, audience, intended length, background (what the lecturer should stay inside), created_at |
 | [Slide](invariants/primitives/SLIDE.md) | `slides`: id, deck_id, position on the main line (null when beside it), anchor slide and question it was made for (when made up), origin (prepared / made up). `slide_revisions`: slide_id, title, what's shown (text, diagram, code), notes, sources, intended length, why it couldn't be shown (once a page has tried), created_at. Only ever added to; the latest is current |
 | [Lecture](invariants/primitives/LECTURE.md) | `lectures`: id, deck_id, host, host session handle, state, place, detour stack. `visits`: lecture_id, slide revision, arrived_at, how it got there, covered or skipped. `utterances`: lecture_id, visit, said or drawn, the sentence or the drawing, why it wasn't heard or seen (if it wasn't), ts. Only ever added to |
-| [Question](invariants/primitives/QUESTION.md) | `questions`: id, lecture_id, asker, text, the visit and utterance it was asked at, state (heard / being answered / put off / answered / declined), put off until, answer utterances, slide made for it. `corrections`: slide_id, question_id, text, applied / set aside / open |
+| [Question](invariants/primitives/QUESTION.md) | `questions`: id, lecture_id, asker, text, the visit and utterance it was asked at, state (waiting / heard / being answered / put off / answered / declined), put off until, why it was declined. Its reply is the utterances that carry its id. Still to come: the slide made for it, and `corrections`: slide_id, question_id, text, applied / set aside / open |
 
 The invariants only require a lecture to keep its path. This plan also keeps the words (`utterances`), because the page already receives every sentence for captions, the Q&A has to show answers in writing, and a different lecturer resuming needs more than a list of slide numbers.
 
@@ -55,14 +55,25 @@ The server owns the loop. The agent is asked for one turn at a time.
 **The lecture keeps the clock, not the page.** It knows how long each clip plays for, so it knows what is being heard now. That gives every listener the same words at the same time, lets a late arrival see the lecture as it is, makes a pause stop the lecture for everyone, and means the state shown ("speaking", "thinking", "listening") is always the lecture's own account of the silence. A page that falls behind catches up when the next sentence arrives.
 
 Rules the core enforces without the agent's help:
-- A question is marked *heard* the moment it's received, before any agent sees it.
+- A question is marked *heard* the moment it's received, before any agent sees it. One sent while the lecturer can't be reached is marked *waiting* instead, and becomes *heard* when the lecturer is back.
+- Questions are taken at the end of the current slide, in the order they were asked, or straight away once a listener has stopped the lecturer.
 - A question turn that ends without `put_off` or `decline` is marked *answered*, with what was said.
-- A put-off question is raised again when the lecture reaches the slide it was put off to, and at the end of the main line.
+- A put-off question is raised again once the slide it was put off to has been given, and at the end of the main line. It can't be put off twice.
+- A question still open when a listener ends the lecture is declined, and says that's why.
 - A drawn block that fails on the page is reported back, and the lecturer gets one more turn to redraw it or carry on without it.
-- A stop from a listener cancels the turn, drops the audio not yet played, and records the cut-off sentences.
+- A stop from a listener cancels the turn, silences every page at once, and records the sentence that was cut off and what was written but not reached. The lecture then waits for a question or for "Carry on", and the lecturer is handed the cut-off thought when the slide is picked back up.
 
-### Speaking and drawing
-Carried over from the prototype: plain spoken prose with a fenced block for anything to be drawn. Any model that can write text can do it. The standing instructions are the prototype's preamble with Wren and Ash taken out.
+### Speaking, drawing and marking
+Carried over from the prototype: plain spoken prose with a fenced block for anything that isn't speech. Any model that can write text can do it. The standing instructions are the prototype's preamble with Wren and Ash taken out.
+
+| Block | What the lecture does with it |
+|---|---|
+| ` ```mermaid ` | Draws it when the speech reaches it |
+| ` ```later ` with a slide number, or `end` | Puts the question being answered off until then |
+| ` ```decline ` with a reason | Declines the question being answered, and shows the reason |
+| Anything else | Nothing. It's never spoken |
+
+Putting off and declining are marks in the text for now because the agent's tools arrive in Stage 3. The `put_off` and `decline` tools will do the same thing through the same code, and the marks stay for hosts whose tools can't be reached mid-turn.
 
 ### Speech
 `edge-tts`, as in the prototype, behind a one-function seam (`text → audio`). It needs the network and is an unofficial client of a Microsoft service, so a local engine is the first alternative to try (see Deferred). In Stage 0 it returned no audio for 3 ordinary sentences out of roughly 650, so the core retries a sentence once before showing it as a failure.
@@ -75,7 +86,7 @@ Each adapter does four things: start a turn, yield text as it's produced, cancel
 
 | Host | Turn and speech | Session | Status |
 |---|---|---|---|
-| Hermes | Streaming chat completions on the gateway | `X-Hermes-Session-Id` | Proven in the prototype |
+| Hermes | Streaming chat completions on the gateway | `X-Hermes-Session-Id` | Built in Stage 2. Gives whole lectures with questions |
 | Claude Agent SDK | A query with partial messages turned on | The SDK's session resume | Speech measured in Stage 0; resume untested |
 | Tools only (e.g. a Claude Code session) | The agent calls `say` with a passage and `listen` to wait for the next moment | The host's own | Speech measured in Stage 0 through the SDK; a real Claude Code session and a long `listen` are untested |
 
@@ -141,6 +152,13 @@ Each adapter does four things: start a turn, yield text as it's produced, cancel
   - across N runs with scripted questions, every question ends answered, put off or declined, and no put-off question is still open when the lecture ends;
   - a stop is heard within one sentence.
 
+- **Result (2026-10-01, `python -m bench.lecture_run`, `python -m bench.report`):** Wren gave the imported deck four times through Professor's own server, running on the workstation against the gateway on the Pi. In each lecture a scripted listener asked something the slide could answer, something a later slide covers, something the lecture had no business answering, and stopped the lecturer mid-sentence to ask a fourth.
+  - **Questions:** all 16 ended settled. 12 were answered and 4 declined with a reason. The 4 that a later slide covered were put off to slide 3 and come back to after it. Each was shown as heard within 2 milliseconds, and the first word of a reply came a median 3.3 seconds after the question was taken (baseline 4.3).
+  - **Stop:** the room went quiet within 2 milliseconds of the stop, partway through the sentence, and the lecturer picked the slide back up afterwards.
+  - **Time to first audio:** first slide a median 4.7 seconds against the baseline's 4.4; later slides 4.6 against 6.3. The first slide is 0.3 seconds slower, which is inside the run-to-run spread on both sides (4.5 to 6.2 here, 4.0 to 5.0 in the baseline), so "no worse" is not shown for it. A direct comparison of the two prompts found no consistent difference.
+  - No stretch in any lecture where what was heard and the state shown disagreed.
+  - Not built: the lecturer asking the room something as its own kind of entry in the chat (`ask`), and moving the lecture in answer to "go back" or "skip", which is Stage 4.
+
 ### 3. Agent tools and Prepare
 - **MCP:** the read tools and the prepare tools, served by the server, with a stdio entry for hosts that only load local commands.
 - **Page:** equations (KaTeX) and code highlighting.
@@ -174,6 +192,7 @@ Each adapter does four things: start a turn, yield text as it's produced, cancel
 - Spoken questions
 - A local speech engine, so a lecture doesn't depend on the network
 - Letting the lecturer decide mid-sentence when to take a question. Until then a question is taken at the end of the current slide, or straight away after a stop.
+- The lecturer asking the room something, as its own kind of entry in the chat
 - Listeners on other networks, and anything beyond trusting the local network
 - Exporting a deck to another format
 - More than one lecture running at once

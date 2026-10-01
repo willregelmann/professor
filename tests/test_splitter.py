@@ -66,3 +66,30 @@ def test_backticks_are_not_read_aloud():
 def test_an_empty_block_draws_nothing():
     assert split("Nothing to see here, I am afraid. ```mermaid\n```", 3) == [
         Say("Nothing to see here, I am afraid.")]
+
+
+def test_a_mark_is_acted_on_never_spoken():
+    from professor.splitter import Mark
+    text = "Good question. I will come to that when we reach the third slide.\n```later\n3\n```\n"
+    for chunk in (1, 4, 9, 1000):
+        assert split(text, chunk) == [
+            Say("Good question. I will come to that when we reach the third slide."), Mark("later", "3")]
+
+
+def test_a_block_of_a_kind_nobody_knows_is_still_not_spoken():
+    from professor.splitter import Mark
+    assert split("Here is some code for you all.\n```python\nprint('hi')\n```\nThat was the code, as promised.", 5) == [
+        Say("Here is some code for you all."), Mark("python", "print('hi')"),
+        Say("That was the code, as promised.")]
+
+
+def test_a_mark_with_nothing_in_it_still_counts():
+    from professor.splitter import Mark
+    assert split("I would rather not answer that one.\n```decline\n```", 3) == [
+        Say("I would rather not answer that one."), Mark("decline", "")]
+
+
+def test_what_has_not_made_a_sentence_yet_can_be_read_back():
+    s = Splitter()
+    s.feed("This sentence is complete and long. And this one was cut off bef")
+    assert s.unsaid() == "And this one was cut off bef"

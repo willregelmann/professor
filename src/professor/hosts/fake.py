@@ -48,3 +48,24 @@ class FakeHost:
 
     async def cancel(self) -> None:
         self._cancelled = True
+
+
+class NotesReader(FakeHost):
+    """A lecturer with no model behind it, for trying the page out: it reads each
+    slide's notes out as written, and says so when it's asked something."""
+
+    def __init__(self, *, chars_per_s: float = 250.0):
+        super().__init__([], chars_per_s=chars_per_s)
+
+    async def turn(self, prompt: str) -> AsyncIterator[str]:
+        _, found, rest = prompt.partition("then stop):\n")
+        if found:
+            reply = rest.split("\n\n")[0]
+        elif "could not be shown" in prompt:
+            reply = "I can only read my notes out, so I will carry on without that picture."
+        else:
+            reply = ("I am a script with no model behind me, reading the notes out, so I can't answer that. "
+                     "Give this deck through a real host to have questions answered.")
+        self.replies, self._given = [reply], 0
+        async for piece in super().turn(prompt):
+            yield piece

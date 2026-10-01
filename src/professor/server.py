@@ -54,6 +54,12 @@ async def listen(request: web.Request) -> web.WebSocketResponse:
                     lecture.retry()
                 elif cmd == "end":
                     await lecture.end()
+                elif cmd == "ask":
+                    await lecture.ask(str(msg.get("who") or ""), str(msg["text"]))
+                elif cmd == "stop":
+                    await lecture.stop()
+                elif cmd == "carry_on":
+                    lecture.carry_on()
                 elif cmd == "draw_failed":
                     await lecture.draw_failed(str(msg["id"]), str(msg.get("error", "")))
                 elif cmd == "slide_failed":

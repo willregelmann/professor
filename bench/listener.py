@@ -24,6 +24,7 @@ import time
 import aiohttp
 
 from bench import log, metrics
+from professor.lecture import FLOOR
 
 QUESTION = {"who": "Marcus",
             "text": "How does a message actually get from you to Ash and back? Walk me through the hops."}
@@ -86,14 +87,15 @@ async def session(url: str, script=SCRIPT) -> list[tuple[str, dict]]:
     return out
 
 
-async def attend(url: str, *, draw_fails=None, on_event=None, start: bool = True,
+async def attend(url: str, *, draw_fails=None, on_event=None, start: bool = True, stay: bool = False,
                  timeout_s: float = 900) -> dict:
     """Sit through a lecture on Professor's server, from Start to the end of the
     main line, and record everything a listener was sent and when.
 
     `draw_fails(code)` stands in for the page's renderer: it returns an error for
     a diagram that wouldn't draw, and the listener reports it as the page would.
-    `on_event(ws, event)` lets a test act as a listener would, mid-lecture.
+    `on_event(ws, event)` lets a test act as a listener would, mid-lecture, and
+    leave when it returns "leave".
     """
     events: list[dict] = []
     t0 = time.monotonic()
@@ -102,7 +104,6 @@ async def attend(url: str, *, draw_fails=None, on_event=None, start: bool = True
             hello = json.loads((await ws.receive()).data)
             if start:
                 await ws.send_json({"cmd": "start"})
-            floor = False
             async with asyncio.timeout(timeout_s):
                 async for m in ws:
                     if m.type != aiohttp.WSMsgType.TEXT:
@@ -120,10 +121,25 @@ async def attend(url: str, *, draw_fails=None, on_event=None, start: bool = True
                                             "error": error})
                     if on_event and await on_event(ws, d) == "leave":
                         break
-                    floor = floor or d["type"] == "floor"
-                    if d["type"] == "state" and (d["state"] == "ended" or (floor and d["state"] == "listening")):
+                    # The lecture is over for this listener when it ends, or when the
+                    # floor is open and there is nothing left for the lecturer to take.
+                    # With `stay`, only `on_event` (or the lecture ending) decides when to go.
+                    if d["type"] == "state" and (d["state"] == "ended" or (d.get("message") == FLOOR and not stay)):
                         break
     return {"hello": hello, "events": events}
+
+
+def questions(events: list[dict]) -> list[dict]:
+    """Each question a listener saw, with every state it went through and when."""
+    seen: dict[int, dict] = {}
+    for e in events:
+        if e["type"] != "question":
+            continue
+        q = e["question"]
+        mine = seen.setdefault(q["id"], {"id": q["id"], "who": q["who"], "text": q["text"], "states": []})
+        mine["states"].append((q["state"], e["t"]))
+        mine.update(state=q["state"], until=q["until"], reason=q["reason"], reply=q["reply"])
+    return list(seen.values())
 
 
 def slide_turns(events: list[dict]) -> list[dict]:
