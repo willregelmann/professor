@@ -1,0 +1,26 @@
+[project]
+name = "professor"
+version = "0.0.0"
+description = "Live lectures given by AI agents: a lecture that listens."
+requires-python = ">=3.11"
+dependencies = [
+    "aiohttp>=3.9",
+    "edge-tts>=7.2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.23"]
+bench = ["claude-agent-sdk>=0.2"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["professor*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "."]
+asyncio_mode = "auto"

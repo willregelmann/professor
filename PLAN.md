@@ -63,7 +63,7 @@ Rules the core enforces without the agent's help:
 Carried over from the prototype: plain spoken prose with a fenced block for anything to be drawn. Any model that can write text can do it. The standing instructions are the prototype's preamble with Wren and Ash taken out.
 
 ### Speech
-`edge-tts`, as in the prototype, behind a one-function seam (`text → audio`). It needs the network and is an unofficial client of a Microsoft service, so a local engine is the first alternative to try (see Deferred).
+`edge-tts`, as in the prototype, behind a one-function seam (`text → audio`). It needs the network and is an unofficial client of a Microsoft service, so a local engine is the first alternative to try (see Deferred). In Stage 0 it returned no audio for 3 ordinary sentences out of roughly 650, so the core retries a sentence once before showing it as a failure.
 
 ### Checking a slide can be shown
 [Prepare](invariants/capabilities/PREPARE.md) has to know a diagram draws before any listener sees it, and there may be no page open when a deck is prepared. `write_slide` therefore checks through a headless render. The cheapest thing that works on the Pi is an open question (below).
@@ -74,8 +74,8 @@ Each adapter does four things: start a turn, yield text as it's produced, cancel
 | Host | Turn and speech | Session | Status |
 |---|---|---|---|
 | Hermes | Streaming chat completions on the gateway | `X-Hermes-Session-Id` | Proven in the prototype |
-| Claude Agent SDK | A query with partial messages turned on | The SDK's session resume | Untested |
-| Tools only (e.g. a Claude Code session) | The agent calls `say` with a passage and `listen` to wait for the next moment | The host's own | Untested |
+| Claude Agent SDK | A query with partial messages turned on | The SDK's session resume | Speech measured in Stage 0; resume untested |
+| Tools only (e.g. a Claude Code session) | The agent calls `say` with a passage and `listen` to wait for the next moment | The host's own | Speech measured in Stage 0 through the SDK; a real Claude Code session and a long `listen` are untested |
 
 `say` and `listen` belong to the tools-only adapter. They aren't part of the agent's tool set, and the other adapters never expose them.
 
@@ -96,6 +96,18 @@ Each adapter does four things: start a turn, yield text as it's produced, cancel
 - **Baseline:** time to first audio on Hermes, for a slide turn and a question turn, N runs each.
 - **Spikes:** the same measurement through the Agent SDK, and through `say` / `listen` in a Claude Code session.
 - **Exit:** the baseline is recorded, and there's a number for each of the three hosts. If tools-only is too slow to follow, that's written down and its fallback is designed around it.
+- **Result (2026-10-01, `bench/results.jsonl`, `python -m bench.report`):** exit met. Median seconds to first audio, 5 sessions each, all on `claude-opus-5-5` at medium effort:
+
+  | Host | First slide | Question | Later slide |
+  |---|---|---|---|
+  | Hermes (Wren, through the prototype on the Pi) | 4.4 | 4.3 | 6.3 |
+  | Claude Agent SDK, streamed | 2.6 | 2.8 | 2.1 |
+  | Tools only (`say` / `listen`, through the SDK) | 3.0 | 5.0 | 2.9 |
+
+  - No host left the room in silence after the first word: every one wrote faster than the speech played.
+  - Tools-only is fast enough to follow. The agent wrote several `say` calls in one reply and each ran as soon as it was written. Telling it to put one sentence in each call made it slower, not faster.
+  - Hermes is slower to start and says more for the same notes (about 61s of speech for a 35s slide, against 37s). That's the agent and its gateway, not the adapter.
+  - Not yet measured: tools-only in a real Claude Code session with an external tool server, and a `listen` that waits minutes.
 
 ### 1. Core, store and presentation
 - **Core:** the store, the lecture loop, the splitter, [Deliver](invariants/capabilities/DELIVER.md).
@@ -152,7 +164,7 @@ Each adapter does four things: start a turn, yield text as it's produced, cancel
 - More than one lecture running at once
 
 ## Open questions
-1. **Latency budget:** how long can a listener wait for the first word before a lecture stops feeling live? Stage 0 gives the numbers; the threshold is a judgment.
+1. **Latency budget:** how long can a listener wait for the first word before a lecture stops feeling live? Stage 0 measured 2 to 6 seconds depending on the host; the threshold is a judgment.
 2. **Show check:** what does the headless render? Candidates: Mermaid's command-line tool (brings a browser, heavy on the Pi), a small Node script using Mermaid's parser alone (catches syntax, not layout), or asking an open page when there is one.
 3. **Mermaid:** the open-source renderer, as in the prototype, or the hosted service? The plan assumes the renderer.
 4. **Where the server runs:** beside the lecturer's host, or beside the listeners? Preparing "explain this codebase" wants the repository; Wren lives on the Pi.

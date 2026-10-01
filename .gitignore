@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local state
+*.db
+*.db-shm
+*.db-wal
+.claude/settings.local.json
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
+
+# Bench runs (generated; they hold what each agent said)
+bench/transcripts/
