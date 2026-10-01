@@ -23,3 +23,11 @@ dist/
 
 # Bench runs (generated; they hold what each agent said)
 bench/transcripts/
+
+# Stores made by bench runs
+bench/data/
+
+# Written by bench.prepared_run for the judge
+.claude/tests/*/deck.md
+.claude/tests/*/transcript.md
+test-results.xml

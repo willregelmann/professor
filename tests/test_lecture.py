@@ -313,3 +313,14 @@ async def test_a_browser_that_has_sat_idle_through_a_heartbeat_can_still_press_s
             await asyncio.sleep(0.5)
             reader.cancel()
     assert [m["type"] for m in seen][:3] == ["hello", "slide", "state"]
+
+
+async def test_a_slide_known_not_to_draw_is_never_sent_to_be_drawn():
+    slides = [{"title": "One", "diagram": "flowchart broken", "show_error": "Parse error on line 1"},
+              {"title": "Two"}]
+    async with Room([SLIDE_1, SLIDE_3], slides=slides) as room:
+        events = await room.attend(draw_fails=lambda code: "should never be asked")
+    first = next(e for e in events if e["type"] == "slide")["slide"]
+    assert first["diagram"] == "" and first["show_error"] == "Parse error on line 1"
+    assert not [e for e in events if e["type"] == "warn"]
+    assert "could not be drawn" in room.host.prompts[0] and "ALREADY on screen" not in room.host.prompts[0]

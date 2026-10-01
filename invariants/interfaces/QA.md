@@ -6,6 +6,7 @@ The chat beside the [presentation](PRESENTATION.md): where the listeners talk ba
 
 | State | Meaning |
 |---|---|
+| Waiting | The lecturer can't be reached, so it hasn't heard this yet |
 | Heard | The lecturer has it, and hasn't taken it yet |
 | Being answered | The lecturer is answering it now |
 | Put off | The lecturer said when it will come back to it |
@@ -16,7 +17,7 @@ The chat beside the [presentation](PRESENTATION.md): where the listeners talk ba
 
 - **Anything written here is a [question](../primitives/QUESTION.md).** There are no commands and nothing to learn. A listener writes what they'd say to a person: "wait, why?", "slower", "go back to the diagram".
 - The chat is always open, including while the lecturer is speaking.
-- Every question shows its state from the moment it's sent, and the state is always one of the five above.
+- Every question shows its state from the moment it's sent, and the state is always one of those above.
 - [Answers](../capabilities/ANSWER.md) are given out loud in the presentation. The chat keeps them in writing, so an answer can be read back later.
 - Everyone in the lecture sees every question and what became of it.
 - A listener can say who they are. A question from someone who hasn't is from "someone", never from a guessed name.

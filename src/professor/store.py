@@ -93,6 +93,10 @@ CREATE TABLE questions (
 );
 ALTER TABLE utterances ADD COLUMN question_id INTEGER REFERENCES questions(id);
 """,
+    3: """
+-- 1 once a revision has been drawn in a check and came out right.
+ALTER TABLE slide_revisions ADD COLUMN show_checked INTEGER NOT NULL DEFAULT 0;
+""",
 }
 VERSION = max(MIGRATIONS)
 
@@ -132,12 +136,19 @@ class Slide:
     notes: str
     sources: list[str] = field(default_factory=list)
     seconds: int | None = None
-    show_error: str | None = None
+    show_error: str | None = None   # why it couldn't be shown, once a check or a page has tried
+    show_checked: bool = False      # a check drew it and it came out right
+    code_language: str = ""
+    math: str = ""
 
     def shown(self) -> dict:
-        """What a listener sees. Never the notes."""
-        return {"id": self.id, "title": self.title, "text": self.text, "diagram": self.diagram,
-                "code": self.code, "sources": self.sources}
+        """What a listener sees. Never the notes. A diagram or equation that's known
+        not to draw isn't sent to be tried again: the slide says it couldn't be shown."""
+        failed = bool(self.show_error)
+        return {"id": self.id, "title": self.title, "text": self.text,
+                "diagram": "" if failed else self.diagram, "math": "" if failed else self.math,
+                "code": self.code, "code_language": self.code_language, "sources": self.sources,
+                "show_error": self.show_error}
 
 
 @dataclass(frozen=True)
@@ -199,6 +210,18 @@ class Store:
             subject, audience, minutes, background, _now())
         return self.deck(deck_id)
 
+    def describe_deck(self, deck_id: int, *, subject: str | None = None, audience: str | None = None,
+                      minutes: int | None = None, background: str | None = None) -> Deck:
+        """Change what a deck says about itself. Anything left out stays as it was."""
+        deck = self.deck(deck_id)
+        with self.db:
+            self.db.execute(
+                "UPDATE decks SET subject = ?, audience = ?, minutes = ?, background = ? WHERE id = ?",
+                (deck.subject if subject is None else subject, deck.audience if audience is None else audience,
+                 deck.minutes if minutes is None else minutes,
+                 deck.background if background is None else background, deck_id))
+        return self.deck(deck_id)
+
     def deck(self, deck_id: int) -> Deck:
         row = self.db.execute("SELECT id, subject, audience, minutes, background FROM decks WHERE id = ?",
                               (deck_id,)).fetchone()
@@ -213,7 +236,8 @@ class Store:
     # Slides
 
     def add_slide(self, deck_id: int, *, title: str, notes: str, text: str = "", diagram: str = "",
-                  code: str = "", sources: list[str] | None = None, seconds: int | None = None,
+                  code: str = "", code_language: str = "", math: str = "", sources: list[str] | None = None,
+                  seconds: int | None = None, show_checked: bool = False, show_error: str | None = None,
                   origin: str = "prepared", on_main_line: bool = True) -> Slide:
         """Add a slide. On the main line it goes at the end; otherwise it sits beside it."""
         position = None
@@ -224,22 +248,26 @@ class Store:
             "INSERT INTO slides (deck_id, position, origin, created_at) VALUES (?, ?, ?, ?)",
             deck_id, position, origin, _now())
         self.revise_slide(slide_id, title=title, notes=notes, text=text, diagram=diagram, code=code,
-                          sources=sources, seconds=seconds)
+                          code_language=code_language, math=math, sources=sources, seconds=seconds,
+                          show_checked=show_checked, show_error=show_error)
         return self.slide(slide_id)
 
     def revise_slide(self, slide_id: int, *, title: str, notes: str, text: str = "", diagram: str = "",
-                     code: str = "", sources: list[str] | None = None, seconds: int | None = None) -> Slide:
+                     code: str = "", code_language: str = "", math: str = "",
+                     sources: list[str] | None = None, seconds: int | None = None,
+                     show_checked: bool = False, show_error: str | None = None) -> Slide:
         """Add a revision. The latest is what the slide currently says."""
+        shown = {"text": text, "diagram": diagram, "code": code, "code_language": code_language, "math": math}
         self._insert(
-            "INSERT INTO slide_revisions (slide_id, title, shown, notes, sources, seconds, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            slide_id, title, json.dumps({"text": text, "diagram": diagram, "code": code}), notes,
-            json.dumps(sources or []), seconds, _now())
+            "INSERT INTO slide_revisions (slide_id, title, shown, notes, sources, seconds, show_checked, "
+            "show_error, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            slide_id, title, json.dumps(shown), notes, json.dumps(sources or []), seconds,
+            int(show_checked), show_error, _now())
         return self.slide(slide_id)
 
     _SLIDE = """
         SELECT s.id, s.deck_id, s.position, s.origin, r.id AS revision_id, r.title, r.shown, r.notes,
-               r.sources, r.seconds, r.show_error
+               r.sources, r.seconds, r.show_error, r.show_checked
         FROM slides s JOIN slide_revisions r ON r.slide_id = s.id
         WHERE r.id = (SELECT MAX(id) FROM slide_revisions WHERE slide_id = s.id)
     """
@@ -250,7 +278,9 @@ class Store:
         return Slide(id=row["id"], deck_id=row["deck_id"], position=row["position"], origin=row["origin"],
                      revision_id=row["revision_id"], title=row["title"], text=shown.get("text", ""),
                      diagram=shown.get("diagram", ""), code=shown.get("code", ""), notes=row["notes"],
-                     sources=json.loads(row["sources"]), seconds=row["seconds"], show_error=row["show_error"])
+                     sources=json.loads(row["sources"]), seconds=row["seconds"], show_error=row["show_error"],
+                     show_checked=bool(row["show_checked"]), code_language=shown.get("code_language", ""),
+                     math=shown.get("math", ""))
 
     def slide(self, slide_id: int) -> Slide:
         row = self.db.execute(self._SLIDE + " AND s.id = ?", (slide_id,)).fetchone()
@@ -263,9 +293,34 @@ class Store:
         return [self._slide(row) for row in self.db.execute(
             self._SLIDE + " AND s.deck_id = ? AND s.position IS NOT NULL ORDER BY s.position", (deck_id,))]
 
-    def record_show_error(self, revision_id: int, error: str) -> None:
+    def beside(self, deck_id: int) -> list[Slide]:
+        """The slides that aren't on the main line."""
+        return [self._slide(row) for row in self.db.execute(
+            self._SLIDE + " AND s.deck_id = ? AND s.position IS NULL ORDER BY s.id", (deck_id,))]
+
+    def arrange(self, deck_id: int, slide_ids: list[int]) -> list[Slide]:
+        """Set the main line: these slides, in this order. Every other slide of
+        the deck sits beside it. Nothing is deleted."""
+        mine = {row[0] for row in self.db.execute("SELECT id FROM slides WHERE deck_id = ?", (deck_id,))}
+        if len(set(slide_ids)) != len(slide_ids):
+            raise ValueError("a slide can only be on the main line once")
+        if strangers := [i for i in slide_ids if i not in mine]:
+            raise ValueError(f"deck {deck_id} has no slide {strangers[0]}")
         with self.db:
-            self.db.execute("UPDATE slide_revisions SET show_error = ? WHERE id = ?", (error, revision_id))
+            self.db.execute("UPDATE slides SET position = NULL WHERE deck_id = ?", (deck_id,))
+            for position, slide_id in enumerate(slide_ids):
+                self.db.execute("UPDATE slides SET position = ? WHERE id = ?", (position, slide_id))
+        return self.main_line(deck_id)
+
+    def record_show_error(self, revision_id: int, error: str) -> None:
+        """A page tried to draw this revision and couldn't, whatever a check said before."""
+        with self.db:
+            self.db.execute("UPDATE slide_revisions SET show_error = ?, show_checked = 0 WHERE id = ?",
+                            (error, revision_id))
+
+    def lectures(self, deck_id: int) -> list[dict]:
+        return [dict(row) for row in self.db.execute(
+            "SELECT * FROM lectures WHERE deck_id = ? ORDER BY id", (deck_id,))]
 
     # Lectures
 

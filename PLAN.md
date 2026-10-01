@@ -25,13 +25,14 @@ The prototype isn't in git, and the Pi holds the only copy.
 
 ### Packages
 - **`professor` core:** a Python library that holds all the lecture logic: the store, the lecture loop, the splitter that separates what's said from what's drawn, and the question states. Nothing else writes to the store.
-- **Server (`professor serve`):** one aiohttp process. It serves the page, holds a websocket to each listener, runs the lecture loop, and serves the [agent tools](invariants/interfaces/AGENT.md) over MCP.
+- **Server (`professor serve`):** one aiohttp process. It serves the page, holds a websocket to each listener and runs the lecture loop.
+- **Tool server (`professor mcp`):** the [agent tools](invariants/interfaces/AGENT.md) over MCP on stdin and stdout, with no dependency beyond the core. It opens the store directly, so a deck can be prepared with no lecture running.
 - **Page:** one HTML page carrying both the [presentation](invariants/interfaces/PRESENTATION.md) and the [Q&A](invariants/interfaces/QA.md). Mermaid for diagrams, KaTeX for equations, a highlighter for code, all served locally.
 - **Host adapters:** one small module per [host](invariants/interfaces/HOST.md), each with the same four jobs (below).
-- **Claude Code plugin:** the MCP server entry, a skill for preparing a deck, a skill for lecturing, and a `/lecture` command. The Agent SDK loads the same plugin.
+- **Claude Code plugin:** the MCP server entry, a skill for preparing a deck and a `/lecture` command. The Agent SDK loads the same plugin.
 
 ### Storage
-One SQLite file, e.g. `~/.professor/professor.db`, owned by the server.
+One SQLite file, e.g. `~/.professor/professor.db`. Only the core writes to it, from whichever process is running: the server during a lecture, the tool server while preparing.
 
 | Primitive | Storage |
 |---|---|
@@ -79,7 +80,11 @@ Putting off and declining are marks in the text for now because the agent's tool
 `edge-tts`, as in the prototype, behind a one-function seam (`text → audio`). It needs the network and is an unofficial client of a Microsoft service, so a local engine is the first alternative to try (see Deferred). In Stage 0 it returned no audio for 3 ordinary sentences out of roughly 650, so the core retries a sentence once before showing it as a failure.
 
 ### Checking a slide can be shown
-[Prepare](invariants/capabilities/PREPARE.md) has to know a diagram draws before any listener sees it, and there may be no page open when a deck is prepared. `write_slide` therefore checks through a headless render. The cheapest thing that works on the Pi is an open question (below).
+[Prepare](invariants/capabilities/PREPARE.md) has to know a diagram draws before any listener sees it, and there may be no page open when a deck is prepared. `write_slide` therefore draws the slide's diagram and equation in a headless Chrome or Chromium, with the same renderers the page uses, in about half a second.
+
+- A slide that fails is not saved. The error goes back to the agent to fix.
+- Where no browser is installed (the Pi, today) the slide is saved as *not checked*, and the agent is told. That is never reported as a pass.
+- A slide already known not to draw (an imported one, or one a page failed on) is never sent to be drawn again. The page says it couldn't be shown, and the lecturer is told to describe it in words.
 
 ### Host adapters
 Each adapter does four things: start a turn, yield text as it's produced, cancel a turn, and hold a session handle.
@@ -169,6 +174,14 @@ Each adapter does four things: start a turn, yield text as it's produced, cancel
   - Wren gives that deck from the Pi with no access to the repository, and `../fuzzy-assertions` (`test:run`) judges that nothing was invented beyond the notes;
   - no slide reaches a lecture that failed its show check.
 
+- **Result (2026-10-01, `python -m bench.prepared_run`, `/test:run deck-stands-alone`):**
+  - **Claude Code prepares a deck from a repository: met.** With the plugin loaded and this repository as the subject, it read 18 files and wrote a seven-slide, five-minute deck in about two minutes, twice. Every slide carried sources, three had diagrams, and all were checked. The check refused none of them.
+  - **Wren gives it with no access to the repository, and nothing is invented: met in two lectures of three.** Wren gave a prepared deck three times from the gateway on the Pi, with a listener asking one question the deck answers and one it can't. Each time it put the first off to the slide that covers it and came back, and said "I don't know" to the second. The judge found every claim supported by the deck in the second and third lectures. In the first it failed one sentence: Wren said it had given "this deck" four times in Stage 2, where the notes say "the imported deck".
+  - **No slide that failed its check reaches a lecture: met**, by test. `write_slide` doesn't save one, and a slide already known not to draw is never sent to a page to be drawn.
+  - **Found and fixed: a lecturer told a length in seconds ignores it.** Wren spoke for 17 minutes on the five-minute deck. Given the same length in words it spoke for under 7. The notes were also three times what the time allowed, so the preparing skill now puts what must be said first and the rest under "For questions:".
+  - **Not met: saying everything the notes open with.** A third assertion, added here, asks that the lecturer make every point before "For questions:". It failed in both lectures it was judged on: whole sections went unsaid before the skill change, and one sentence and a few details after it. The judge passed it on a "gist of each slide" reading and failed it on the strict one.
+  - First audio on the first slide rose to 9 to 10 seconds with these decks, whose background runs to several hundred words.
+
 ### 4. Navigate and made-up slides
 - **[Navigate](invariants/capabilities/NAVIGATE.md):** `go`, nested detours, covered and skipped, the place shown on the page.
 - **Made-up slides:** a slide written during a lecture is kept beside the main line with its question.
@@ -193,13 +206,14 @@ Each adapter does four things: start a turn, yield text as it's produced, cancel
 - A local speech engine, so a lecture doesn't depend on the network
 - Letting the lecturer decide mid-sentence when to take a question. Until then a question is taken at the end of the current slide, or straight away after a stop.
 - The lecturer asking the room something, as its own kind of entry in the chat
+- A host adding the tool server to its own configuration. Stage 3 loads it into Claude Code through the plugin; Wren's Hermes configuration is untouched, because a lecturer needs no tools yet.
 - Listeners on other networks, and anything beyond trusting the local network
 - Exporting a deck to another format
 - More than one lecture running at once
 
 ## Open questions
 1. **Latency budget:** how long can a listener wait for the first word before a lecture stops feeling live? Stage 0 measured 2 to 6 seconds depending on the host; the threshold is a judgment.
-2. **Show check:** what does the headless render? Candidates: Mermaid's command-line tool (brings a browser, heavy on the Pi), a small Node script using Mermaid's parser alone (catches syntax, not layout), or asking an open page when there is one.
+2. **Show check on the Pi:** the check needs a browser, and the Pi has none. Is preparing on the Pi wanted at all? If so: install Chromium there, or ask an open page when there is one.
 3. **Mermaid:** the open-source renderer, as in the prototype, or the hosted service? The plan assumes the renderer.
 4. **Where the server runs:** beside the lecturer's host, or beside the listeners? Preparing "explain this codebase" wants the repository; Wren lives on the Pi.
 5. **Who advances:** at the end of a slide the core moves on after a short pause. Should a single listener be able to turn that off and step through by hand?

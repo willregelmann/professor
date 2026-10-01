@@ -1,0 +1,7 @@
+{
+  "name": "professor",
+  "version": "0.1.0",
+  "description": "Live lectures given by AI agents: a lecture that listens. Prepare a deck of slides and speaker notes from a codebase or a subject, then have an agent give it out loud and take questions.",
+  "author": { "name": "Will Regelmann" },
+  "keywords": ["lecture", "slides", "presentation", "teaching", "mcp"]
+}

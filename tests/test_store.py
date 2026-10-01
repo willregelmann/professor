@@ -3,7 +3,13 @@ from pathlib import Path
 import pytest
 
 from professor import importers, prompts
+from professor.showcheck import Check
 from professor.store import Store
+
+
+def drawn(**_):
+    """A show check that always passes, so these tests don't need a browser."""
+    return Check(checked=True)
 
 PROTOTYPE_DECK = Path(__file__).resolve().parent.parent / "prototype" / "deck.json"
 
@@ -70,7 +76,7 @@ def test_the_store_survives_being_reopened(tmp_path):
 
 
 def test_the_prototype_deck_becomes_a_stored_deck(store):
-    deck = importers.import_prototype_deck(store, PROTOTYPE_DECK, audience="a room of software engineers")
+    deck = importers.import_prototype_deck(store, PROTOTYPE_DECK, audience="a room of software engineers", check=drawn)
     slides = store.main_line(deck.id)
     assert deck.subject == "Two agents, one house: how Wren and Ash work"
     assert [s.title for s in slides] == ["Who is talking", "Memory is three layers, not one",
@@ -78,11 +84,33 @@ def test_the_prototype_deck_becomes_a_stored_deck(store):
     assert [s.seconds for s in slides] == [35, 50, 50] and deck.minutes == 2
     assert slides[1].diagram.startswith("flowchart LR") and not slides[0].diagram
     assert all(s.origin == "prepared" for s in slides)
+    assert slides[1].show_checked and not slides[1].show_error
+
+
+def test_an_imported_slide_that_fails_its_check_is_kept_and_marked(store):
+    deck = importers.import_prototype_deck(
+        store, PROTOTYPE_DECK, check=lambda diagram="", **_: Check(True, "Parse error" if diagram else None))
+    slides = store.main_line(deck.id)
+    assert [bool(s.show_error) for s in slides] == [False, True, False]
+    # A diagram that's known not to draw is never sent to a listener to be tried again.
+    assert slides[1].shown()["diagram"] == "" and slides[1].shown()["show_error"] == "Parse error"
+
+
+def test_arranging_sets_the_main_line_and_deletes_nothing(store):
+    deck = store.create_deck("Subject")
+    a, b, c = (store.add_slide(deck.id, title=t, notes="n").id for t in "abc")
+    assert [s.id for s in store.arrange(deck.id, [c, a])] == [c, a]
+    assert [s.id for s in store.beside(deck.id)] == [b]
+    with pytest.raises(ValueError, match="only be on the main line once"):
+        store.arrange(deck.id, [a, a])
+    with pytest.raises(ValueError, match="has no slide 999"):
+        store.arrange(deck.id, [999])
+    assert [s.id for s in store.main_line(deck.id)] == [c, a]      # a refused arrangement changes nothing
 
 
 def test_the_standing_instructions_carry_the_deck_and_no_one_agents_persona(store):
     deck = importers.import_prototype_deck(store, PROTOTYPE_DECK, audience="a room of software engineers",
-                                           background="Wren runs on a Raspberry Pi.")
+                                           background="Wren runs on a Raspberry Pi.", check=drawn)
     text = prompts.standing(deck, store.main_line(deck.id))
     assert "You are Wren" not in text and "Ash runs on" not in text
     assert "to a room of software engineers" in text

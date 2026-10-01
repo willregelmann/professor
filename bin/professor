@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Launcher for the professor Claude Code plugin.
+#   bin/professor install   create ~/.professor/venv and install professor into it
+#   bin/professor ...       run the professor CLI (the MCP server and /lecture call this)
+# PROFESSOR_PYTHON overrides the interpreter, e.g. a development checkout's venv.
+set -euo pipefail
+ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+VENV="${PROFESSOR_HOME:-$HOME/.professor}/venv"
+PY="${PROFESSOR_PYTHON:-$VENV/bin/python}"
+
+if [ "${1:-}" = "install" ]; then
+  python3 -m venv "$VENV"
+  "$VENV/bin/pip" install --quiet --upgrade pip
+  "$VENV/bin/pip" install --quiet "$ROOT"
+  echo "professor is installed in $VENV"
+  exit 0
+fi
+
+if [ ! -x "$PY" ]; then
+  echo "professor isn't installed. Run: ${ROOT}/bin/professor install" >&2
+  exit 1
+fi
+exec "$PY" -m professor.cli "$@"

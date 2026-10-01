@@ -24,7 +24,7 @@ where = ["src"]
 include = ["professor*"]
 
 [tool.setuptools.package-data]
-professor = ["page/*", "page/static/*"]
+professor = ["page/*", "page/static/*", "page/static/katex/*", "page/static/katex/fonts/*", "page/static/highlight/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

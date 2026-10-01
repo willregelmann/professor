@@ -4,6 +4,7 @@
     professor decks
     professor serve --deck 1 --host fake
     professor serve --deck 1 --host hermes --hermes-url http://ha-pi.local:8642
+    professor mcp
 """
 from __future__ import annotations
 
@@ -14,7 +15,7 @@ from pathlib import Path
 
 from aiohttp import web
 
-from professor import importers, store as store_module
+from professor import importers, mcp_server, store as store_module
 from professor.hosts import hermes
 from professor.hosts.fake import NotesReader
 from professor.lecture import Lecture
@@ -34,6 +35,7 @@ def main(argv: list[str] | None = None) -> None:
     imp.add_argument("--background", default="", help="what the lecturer should stay inside")
 
     sub.add_parser("decks", help="list the decks in the store")
+    sub.add_parser("mcp", help="serve the agent's tools over MCP on stdin and stdout")
 
     serve = sub.add_parser("serve", help="give a deck: serve the page and run the lecture")
     serve.add_argument("--deck", type=int, required=True)
@@ -49,12 +51,21 @@ def main(argv: list[str] | None = None) -> None:
     serve.add_argument("--bind", default="0.0.0.0")
 
     args = ap.parse_args(argv)
+    if args.command == "mcp":
+        mcp_server.serve(args.db)
+        return
     store = Store(args.db)
 
     if args.command == "import-deck":
         deck = importers.import_prototype_deck(store, args.path, audience=args.audience,
                                                background=args.background)
-        print(f"deck {deck.id}: {deck.subject} ({len(store.main_line(deck.id))} slides)")
+        slides = store.main_line(deck.id)
+        print(f"deck {deck.id}: {deck.subject} ({len(slides)} slides)")
+        for i, slide in enumerate(slides):
+            if slide.show_error:
+                print(f"  slide {i + 1} can't be shown as it stands. {slide.show_error}")
+            elif (slide.diagram or slide.math) and not slide.show_checked:
+                print(f"  slide {i + 1} wasn't checked: no browser was found to draw its diagram with.")
     elif args.command == "decks":
         for deck in store.decks():
             print(f"{deck.id}\t{len(store.main_line(deck.id))} slides\t{deck.subject}")

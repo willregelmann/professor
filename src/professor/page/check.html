@@ -1,0 +1,28 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Professor show check</title>
+<!-- Loaded headless by professor.showcheck. It draws a slide's diagram and equation
+     with the same renderers the presentation uses, and reports whether each worked. -->
+<script src="static/mermaid.min.js"></script>
+<script src="static/katex/katex.min.js"></script>
+<pre id="result"></pre>
+<script>
+(async () => {
+  const out = {};
+  try {
+    const input = JSON.parse(decodeURIComponent(escape(atob(location.hash.slice(1)))));
+    mermaid.initialize({ startOnLoad: false, theme: "dark", securityLevel: "strict" });
+    if (input.diagram) {
+      try { await mermaid.parse(input.diagram); await mermaid.render("d", input.diagram); out.diagram = null; }
+      catch (e) { out.diagram = String(e.message || e).slice(0, 400); }
+    }
+    if (input.math) {
+      try { katex.renderToString(input.math, { throwOnError: true, displayMode: true }); out.math = null; }
+      catch (e) { out.math = String(e.message || e).slice(0, 400); }
+    }
+  } catch (e) {
+    out.fault = String(e.message || e).slice(0, 400);
+  }
+  document.getElementById("result").textContent = "PROFESSOR-CHECK " + JSON.stringify(out);
+})();
+</script>

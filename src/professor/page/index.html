@@ -24,7 +24,15 @@
   #code { font: 16px/1.45 ui-monospace, monospace; background: #1f1a15; padding: 12px 14px; border-radius: 6px;
           overflow: auto; max-height: 40vh; margin: .6em 0 0; }
   #sources { color: #a08a70; font-size: 14px; margin-top: 1em; }
-  #body:empty, #code:empty, #sources:empty { display: none; }
+  #math { font-size: 26px; margin: .5em 0 0; overflow-x: auto; }
+  #body:empty, #code:empty, #sources:empty, #math:empty { display: none; }
+  /* Code colours, in the page's own palette. */
+  .hljs-comment, .hljs-quote { color: #8a7a66; font-style: italic; }
+  .hljs-keyword, .hljs-selector-tag, .hljs-built_in, .hljs-type { color: #e0a080; }
+  .hljs-string, .hljs-attr, .hljs-symbol, .hljs-regexp { color: #a9c98f; }
+  .hljs-number, .hljs-literal { color: #e0c070; }
+  .hljs-title, .hljs-function .hljs-title, .hljs-section { color: #9cc4d9; }
+  .hljs-variable, .hljs-params, .hljs-meta { color: #d8cbb8; }
   #caption { font-size: 24px; color: #d8cbb8; min-height: 3.2em; padding: 1.5vh 4vw 0; }
   #bar { display: flex; gap: 12px; padding: 12px 4vw; background: #1f1a15; align-items: center; flex-wrap: wrap; }
   #qa { flex: 0 0 340px; display: flex; flex-direction: column; background: #1a1612; border-left: 1px solid #2f2720; }
@@ -60,7 +68,10 @@
   #notices { padding: 0 4vw 10px; background: #1f1a15; }
   #notices div { color: #e0a080; font-size: 15px; padding-top: 4px; }
 </style>
+<link rel="stylesheet" href="/static/katex/katex.min.css">
 <script src="/static/mermaid.min.js"></script>
+<script src="/static/katex/katex.min.js"></script>
+<script src="/static/highlight/highlight.min.js"></script>
 </head>
 <body>
 <div id="room">
@@ -70,6 +81,7 @@
     <div id="place"></div>
     <div id="title">Connecting…</div>
     <div id="body"></div>
+    <div id="math"></div>
     <pre id="code"></pre>
     <div id="sources"></div>
   </div>
@@ -211,10 +223,48 @@ function showPlace() {
 function showSlide(slide) {
   $("title").textContent = slide.title;
   $("body").textContent = slide.text || "";
-  $("code").textContent = slide.code || "";
+  showCode(slide.code || "", slide.code_language || "");
+  showMath(slide.math || "", slide.revision);
   $("sources").textContent = (slide.sources || []).length ? "Sources: " + slide.sources.join(" · ") : "";
   $("caption").textContent = "";
-  showFigure(slide.diagram, error => send({cmd: "slide_failed", revision: slide.revision, error}));
+  if (slide.show_error) showFailure("This slide has a diagram or an equation that couldn't be drawn.");
+  else showFigure(slide.diagram, error => send({cmd: "slide_failed", revision: slide.revision, error}));
+}
+
+// A slide that's known not to draw says so, where the picture would have been.
+function showFailure(text) {
+  const fig = $("fig");
+  fig.textContent = "";
+  const div = document.createElement("div");
+  div.className = "figure-error";
+  div.textContent = text;
+  fig.appendChild(div);
+  $("stage").classList.add("has-figure");
+}
+
+function showCode(code, language) {
+  const el = $("code");
+  el.textContent = code;
+  if (!code) return;
+  try {
+    const out = language && hljs.getLanguage(language) ? hljs.highlight(code, {language}) : hljs.highlightAuto(code);
+    el.innerHTML = out.value;   // highlight.js escapes the code itself
+  } catch (e) { /* plain text is fine */ }
+}
+
+function showMath(math, revision) {
+  const el = $("math");
+  el.textContent = "";
+  if (!math) return;
+  try {
+    katex.render(math, el, {displayMode: true, throwOnError: true});
+  } catch (e) {
+    el.textContent = "This equation couldn't be drawn: " + String(e.message || e).slice(0, 200);
+    el.className = "figure-error";
+    send({cmd: "slide_failed", revision, error: "The equation couldn't be drawn: " + String(e.message || e)});
+    return;
+  }
+  el.className = "";
 }
 
 // The timer ends a clip that has no sound, and is the watchdog for one that has:

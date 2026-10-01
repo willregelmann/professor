@@ -45,6 +45,9 @@ STANDING = (
 )
 
 
+WORDS_PER_S = 2.5  # about how fast the speech engine talks
+
+
 def standing(deck: Deck, slides: list[Slide]) -> str:
     """Sent once, at the start of a host session."""
     parts = [STANDING.format(audience=f", to {deck.audience}" if deck.audience else "")]
@@ -66,17 +69,23 @@ def _seconds(deck: Deck, slide: Slide, n: int) -> int | None:
 def present(deck: Deck, slide: Slide, index: int, n: int, already_said: list[Utterance]) -> str:
     """The lecture has reached a slide."""
     seconds = _seconds(deck, slide, n)
-    length = f", about {seconds} seconds of speech" if seconds else ""
+    # A length in words holds a lecturer to time far better than one in seconds does.
+    length = (f", in about {seconds} seconds of speech, which is at most about {round(seconds * WORDS_PER_S, -1):.0f} "
+              "words; the notes hold more than there is time to say, so make the points they open with and "
+              "keep anything under \"For questions\" for when someone asks" if seconds else "")
     text = (f"Present slide {index + 1} of {n}, \"{slide.title}\". Speaker notes (cover these in your own "
             f"words{length}, then stop):\n{slide.notes}")
     if slide.text:
         text += f"\n\nThe slide shows this text. Talk about it; do not read it out:\n{slide.text}"
     if slide.code:
         text += f"\n\nThe slide shows this code. Talk the room through it; do not read it out:\n{slide.code}"
-    if slide.diagram and slide.show_error:
-        text += ("\n\nThis slide was meant to show a diagram, but it could not be drawn, so the room cannot "
-                 "see it. Say so briefly and describe it in words instead. Do not draw another:\n"
-                 + slide.diagram)
+    if slide.math and not slide.show_error:
+        text += ("\n\nThe slide shows this equation, properly typeset. Say what it means and what each part "
+                 f"is; do not read the symbols out one by one:\n{slide.math}")
+    if (slide.diagram or slide.math) and slide.show_error:
+        text += ("\n\nThis slide was meant to show a diagram or an equation, but it could not be drawn, so "
+                 "the room cannot see it. Say so briefly and describe it in words instead. Do not draw "
+                 "another:\n" + (slide.diagram or slide.math))
     elif slide.diagram:
         text += ("\n\nThis diagram is ALREADY on screen for this slide; walk the room through it and do "
                  f"not draw another:\n{slide.diagram}")
@@ -114,7 +123,7 @@ def answer(question: Question, asked_on: Slide | None, just_said: str, *, on_sli
         text += f", just after you said: \"{just_said}\"" if just_said else "."
     elif just_said:
         text += f"\n\nIt was asked just after you said: \"{just_said}\""
-    text += "\n\nReply out loud, briefly (under 30 seconds of speech), then stop."
+    text += "\n\nReply out loud, briefly (under 30 seconds of speech, so at most about 75 words), then stop."
     later = [f"slide {i + 1} (\"{s.title}\")" for i, s in enumerate(slides)
              if on_slide is not None and s.position is not None and on_slide.position is not None
              and s.position > on_slide.position]
@@ -137,7 +146,7 @@ def come_back(question: Question, words_then: str, *, at_end: bool) -> str:
         text += f" What you said at the time was: \"{words_then}\""
     text += ("\n\nSay out loud that you are coming back to that question, and whose it was. If what you "
              "have just presented already answered it, say so in a sentence or two and do not go over it "
-             "again. Otherwise answer it briefly (under 30 seconds of speech). It cannot be put off again.")
+             "again. Otherwise answer it briefly (under 30 seconds of speech, so at most about 75 words). It cannot be put off again.")
     return text
 
 
