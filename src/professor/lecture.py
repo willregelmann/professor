@@ -14,17 +14,24 @@ Whatever the room says back is settled, whether or not the lecturer remembers to
 settle it. A question is heard the moment it arrives. It is taken at the next
 break, or straight away once a listener stops the lecturer. It ends answered,
 put off or declined, and one that was put off is brought back.
+
+The lecture is always at exactly one slide. The lecturer can show another slide,
+or one it makes up on the spot, as a detour: the lecture remembers where it left,
+detours can sit inside detours, and when the turn ends the screen is back where
+it was whether or not the lecturer said so. Moving through a deck never changes
+its order.
 """
 from __future__ import annotations
 
 import asyncio
 import base64
 import contextlib
+import re
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
-from professor import prompts, speech
+from professor import prompts, showcheck, speech
 from professor.hosts.base import Host
 from professor.splitter import Draw, Mark, Say, Splitter
 from professor.store import SETTLED, Question, Slide, Store
@@ -46,10 +53,30 @@ class _HostFailed:
 
 @dataclass
 class _Drawing:
+    """Something drawn onto the slide that's showing, during a turn."""
     utterance_id: int
     visit_id: int
     code: str
+    checked: bool = False
     error: str | None = None
+
+
+@dataclass
+class _Picture:
+    """Something the lecturer wrote to be looked at, with the result of its show check."""
+    fields: dict            # title, text, diagram, code, code_language, math
+    check: showcheck.Check
+    own_slide: bool         # written as a slide of its own, not a drawing on the current one
+    source: str             # what the lecturer wrote, for handing back if it can't be drawn
+
+
+@dataclass
+class _Frame:
+    """A slide the lecture is at. The first frame is its place on the main line;
+    each one after it is a detour from the one before."""
+    slide: Slide
+    visit: int
+    place: dict
 
 
 @dataclass
@@ -58,11 +85,14 @@ class _Turn:
     failure: str | None = None        # why the host couldn't be reached, if it couldn't
     stopped: bool = False             # a listener stopped the lecturer
     marks: list[Mark] = field(default_factory=list)
+    drawings: list[_Drawing] = field(default_factory=list)
+    failed: tuple[str, str] | None = None  # a picture that couldn't be drawn, and why
 
 
 class Lecture:
     def __init__(self, store: Store, lecture_id: int, host: Host, *,
                  speak: Callable[[str], Awaitable[bytes]] = speech.speak,
+                 check: Callable[..., showcheck.Check] = showcheck.check,
                  pause_between_s: float = 0.9,
                  text_timeout_s: float = 60.0,
                  retry_delays_s: tuple[float, ...] = (2, 5, 15),
@@ -70,6 +100,7 @@ class Lecture:
         self.store, self.id, self.host = store, lecture_id, host
         self.deck = store.deck(store.lecture(lecture_id)["deck_id"])
         self._speak = speak
+        self._check = check
         self.pause_between_s = pause_between_s
         self.text_timeout_s = text_timeout_s
         self.retry_delays_s = retry_delays_s
@@ -89,7 +120,9 @@ class Lecture:
         self._task: asyncio.Task | None = None
         self._instructed = False          # has this host session had the standing instructions?
         self._main: list[Slide] = store.main_line(self.deck.id)
-        self._slide: Slide | None = None
+        self._frames: list[_Frame] = []   # where the lecture is: its place, then any detours
+        self._jump: int | None = None     # where on the main line the lecturer asked to carry on from
+        self._slide: Slide | None = None  # what's on screen: the last frame's
         self._visit: int | None = None
         self._place: dict | None = None
         self._figure: dict | None = None  # a drawing made during the turn that's on screen now
@@ -130,7 +163,8 @@ class Lecture:
             index = next((i for i, s in enumerate(self._main) if s.id == q.until_slide_id), None)
             until = "the end" if index is None else f"slide {index + 1}"
         return {"id": q.id, "who": q.asker, "text": q.text, "state": q.state, "until": until,
-                "reason": q.reason, "reply": self.store.reply(q.id)}
+                "reason": q.reason, "reply": self.store.reply(q.id),
+                "slides": [slide.title for slide in self.store.made_for(q.id)]}
 
     async def _send(self, msg: dict) -> None:
         for sub in list(self._subs):
@@ -240,7 +274,7 @@ class Lecture:
         if self._slide is None or self._slide.revision_id != revision_id or self._slide.show_error:
             return
         self.store.record_show_error(revision_id, error[:400])
-        self._slide = self.store.slide(self._slide.id)
+        self._slide = self._frames[-1].slide = self.store.slide(self._slide.id)
         await self._send({"type": "warn", "message": "This slide's diagram couldn't be drawn."})
 
     # The loop
@@ -248,50 +282,157 @@ class Lecture:
     async def _run(self) -> None:
         await self._started.wait()
         try:
-            n = len(self._main)
-            for i, slide in enumerate(self._main):
-                await self._give(self.store.slide(slide.id), i, n, how="start" if i == 0 else "next")
-                await self._come_back(slide)
-                await self._attend()
-                await self._wait(self.pause_between_s)
-                await self._attend()
-            # Reaching the end of the main line doesn't end the lecture. It opens the floor.
-            self._floor_open = True
-            await self._send({"type": "floor"})
-            await self._come_back(None)
+            n, i, last = len(self._main), 0, None
             while True:
-                await self._attend()
-                self._wake.clear()
-                if self.store.questions(self.id, "heard") or self._stop.is_set():
-                    continue
-                await self._set_state(LISTENING, FLOOR)
-                await self._wake.wait()
+                while i < n:
+                    self._jump = None
+                    how = "start" if last is None else "next" if i == last + 1 else "jump"
+                    await self._give(i, how)
+                    if self._jump is None:  # otherwise the slide was left for somewhere else
+                        await self._come_back(self._main[i])
+                        await self._attend()
+                        await self._wait(self.pause_between_s)
+                        await self._attend()
+                    last, i = i, self._landing(i + 1)
+                # Reaching the end of the main line doesn't end the lecture. It opens the floor.
+                self._floor_open, self._jump = True, None
+                await self._send({"type": "floor"})
+                await self._come_back(None)
+                while True:
+                    await self._attend()
+                    if self._jump is not None:
+                        if self._landing(n) < n:
+                            break
+                        self._jump = None  # "next" from the end goes nowhere
+                    self._wake.clear()
+                    if self.store.questions(self.id, "heard") or self._stop.is_set():
+                        continue
+                    await self._set_state(LISTENING, FLOOR)
+                    await self._wake.wait()
+                # The lecturer went back into the deck. The lecture carries on from there.
+                i, self._floor_open = self._landing(n), False
         except Exception as exc:
             # A fault in the lecture itself. It can't go on, and the room is told why.
             await self._set_state(STUCK, f"The lecture has stopped: {exc or type(exc).__name__}")
             raise
 
-    async def _give(self, slide: Slide, index: int, n: int, how: str) -> None:
+    def _landing(self, otherwise: int) -> int:
+        """Where on the main line the lecture goes next: where the lecturer asked
+        to carry on from, if it did, or else straight on."""
+        return otherwise if self._jump is None else max(0, min(self._jump, len(self._main)))
+
+    async def _give(self, index: int, how: str) -> None:
+        slide = self.store.slide(self._main[index].id)
         visit = self.store.arrive(self.id, slide, how)
-        self._slide, self._visit, self._figure = slide, visit, None
-        self._place = {"index": index, "of": n, "detour": False}
+        place = {"index": index, "of": len(self._main), "detour": False}
+        self._frames = [_Frame(slide, visit, place)]
+        self._slide, self._visit, self._place, self._figure = slide, visit, place, None
         await self._send(self._slide_message())
 
+        # Coming back to a slide that has already been given isn't giving it again.
+        before = self.store.said_on(self.id, slide.id, visit)
         # A listener can stop the lecturer partway. Once the room has been
-        # attended to, the slide is picked up from where it was cut off.
-        while (await self._turn_until_heard(lambda: prompts.present(
-                self.deck, self._slide, index, n, self.store.utterances(self.id, visit)))).stopped:
+        # attended to, the slide is picked up from where it was cut off, unless
+        # the room asked to move on.
+        while (await self._take_turn(lambda: prompts.present(
+                self.deck, self.store.slide(slide.id), index, len(self._main),
+                self.store.utterances(self.id, visit), before=before))).stopped:
             await self._attend()
-
-        # A drawing made during the turn may have failed on a page. The lecturer
-        # gets one more turn to draw it again, or to carry on without it.
-        mine = [d for d in self._drawings.values() if d.visit_id == visit]
-        if mine and self._subs:
-            await self._wait(self.draw_report_grace_s)  # the last drawing's report may still be on its way
-        failed = [d for d in mine if d.error]
-        if failed:
-            await self._turn_until_heard(lambda: prompts.redraw(failed[-1].code, failed[-1].error))
+            if self._jump is not None:
+                return  # left unfinished, so not covered
         self.store.mark_covered(visit)
+
+    async def _take_turn(self, prompt: Callable[[], str], question: Question | None = None) -> _Turn:
+        """Give the lecturer a turn, and settle what it leaves undone. If something
+        it drew couldn't be shown, it gets one more turn to draw it again or carry
+        on without it. If it left a detour open, it gets one to say it's going back."""
+        turn = await self._turn_until_heard(prompt, question)
+        if not turn.stopped:
+            await self._redraw(turn, question)
+        if not turn.stopped and len(self._frames) > 1:
+            # The lecturer left a detour open. It is asked to say it's going back, so
+            # the room hears where the screen is going before it goes.
+            base = self._frames[0]
+            closing = await self._turn_until_heard(
+                lambda: prompts.close_detour(base.place["index"], base.slide.title), question)
+            turn.marks += closing.marks
+            turn.stopped = closing.stopped
+        # Whatever was said, the screen ends the turn back where the lecture left.
+        await self._return(0)
+        return turn
+
+    async def _redraw(self, turn: _Turn, question: Question | None) -> None:
+        failed = turn.failed
+        if failed is None and self._subs and any(not d.checked for d in turn.drawings):
+            # Nothing could check these drawings here, so a page is the first to try.
+            await self._wait(self.draw_report_grace_s)  # the last one's report may still be on its way
+            failed = next(((d.code, d.error) for d in reversed(turn.drawings) if d.error), None)
+        if failed:
+            again = await self._turn_until_heard(lambda: prompts.redraw(*failed), question)
+            turn.marks += again.marks
+            turn.stopped = again.stopped
+
+    # Moving
+
+    async def _show(self, slide: Slide, how: str, place: dict) -> None:
+        """Leave the slide that's showing for another, remembering the way back."""
+        visit = self.store.arrive(self.id, slide, how)
+        self._frames.append(_Frame(slide, visit, place))
+        self._slide, self._visit, self._place, self._figure = slide, visit, place, None
+        await self._send(self._slide_message())
+
+    async def _return(self, to_depth: int) -> None:
+        """Come back from detours until only `to_depth` are left open."""
+        if len(self._frames) - 1 <= to_depth:
+            return
+        del self._frames[to_depth + 1:]
+        frame = self._frames[-1]
+        self.store.arrive(self.id, frame.slide, "return")  # the path keeps the way back too
+        # What's said from here belongs to the visit that was interrupted.
+        self._slide, self._visit, self._place, self._figure = frame.slide, frame.visit, frame.place, None
+        await self._send(self._slide_message())
+
+    async def _go(self, body: str) -> None:
+        """The lecturer moves the lecture: a detour to a slide, back from one, or
+        on along the main line from somewhere else."""
+        word = body.strip().lower()
+        number = re.search(r"\d+", word)
+        base = self._frames[0].place["index"]
+        target = None
+        if word.startswith("return"):
+            return await self._return(max(0, len(self._frames) - 2))
+        if word.startswith("next"):
+            self._jump = base + 1
+            return
+        if word.startswith("from") and number and 1 <= int(number.group()) <= len(self._main):
+            self._jump = int(number.group()) - 1
+            return
+        if word.startswith("back") and not number:
+            target = base - 1
+        elif number and not word.startswith("from"):
+            target = int(number.group()) - 1
+        if target is None or not 0 <= target < len(self._main):
+            await self._send({"type": "warn", "message": "The lecturer tried to move to a slide that isn't there."})
+            return
+        slide = self.store.slide(self._main[target].id)
+        if slide.id != self._slide.id:
+            await self._show(slide, "detour", {"index": target, "of": len(self._main),
+                                               "detour": len(self._frames), "from": base})
+
+    async def _make_up(self, picture: _Picture, question: Question | None) -> None:
+        """A slide made up on the spot. It's shown as a detour and kept beside the
+        main line, with the question it was made for. The main line doesn't change."""
+        base = self._frames[0]
+        made_for = (f" in answer to {question.asker or 'someone'}, who asked: {question.text}"
+                    if question else "")
+        fields = dict(picture.fields)
+        title = fields.pop("title", "") or (question.text[:80] if question else "A sketch")
+        slide = self.store.add_slide(
+            self.deck.id, title=title, notes=f"Made up during a lecture{made_for}.",
+            origin="made_up", on_main_line=False, anchor_slide_id=base.slide.id,
+            question_id=question.id if question else None, show_checked=picture.check.ok, **fields)
+        await self._show(slide, "made up", {"index": None, "of": len(self._main), "detour": len(self._frames),
+                                            "from": base.place["index"], "made_up": True})
 
     # What the room says back
 
@@ -305,8 +446,20 @@ class Lecture:
             if not heard:
                 return
             await self._answer(heard[0], prompts.answer(
-                heard[0], *self.store.moment(heard[0]), on_slide=self._slide, slides=self._main,
-                can_put_off=not self._floor_open), can_put_off=not self._floor_open)
+                heard[0], *self.store.moment(heard[0]), on_slide=self._frames[0].slide, slides=self._main,
+                can_put_off=not self._floor_open, stopped_after=self._stopped_after()),
+                can_put_off=not self._floor_open)
+
+    def _stopped_after(self) -> str | None:
+        """If a listener stopped the lecturer partway through the slide it's on,
+        the last thing the room heard of that slide. The lecturer's own record of
+        its turn says it said everything, so it has to be told what was heard."""
+        said = [u for u in self.store.utterances(self.id, self._frames[0].visit)
+                if u.kind == "said" and u.question_id is None]
+        if not said or said[-1].failed not in ("cut off", "unsaid"):
+            return None
+        heard = [u.text for u in said if not u.failed]
+        return heard[-1] if heard else ""
 
     async def _hold(self) -> None:
         """The lecturer has been stopped. It listens until a question comes or it's let go on."""
@@ -331,7 +484,7 @@ class Lecture:
         if self._stop.is_set():
             await self._hold()
         q = await self._set_question(q, "answering")
-        turn = await self._turn_until_heard(lambda: prompt, question=q)
+        turn = await self._take_turn(lambda: prompt, question=q)
         marks = {m.kind: m.body for m in turn.marks}
         if "decline" in marks:
             await self._set_question(q, "declined", reason=marks["decline"] or "The lecturer gave no reason.")
@@ -344,7 +497,7 @@ class Lecture:
         """Where a question was put off to: a slide still to come, or (None) the end."""
         digits = "".join(c for c in body if c.isdigit())
         index = int(digits) - 1 if digits else -1
-        here = self._place["index"] if self._place else -1
+        here = self._frames[0].place["index"] if self._frames else -1
         return self._main[index].id if here < index < len(self._main) else None
 
     # Turns
@@ -370,7 +523,6 @@ class Lecture:
 
     async def _turn(self, prompt: str, question: Question | None = None) -> _Turn:
         """One turn of the host, heard through to the end, or until a listener stops it."""
-        visit = self._visit
         qid = question.id if question else None
         if not self._instructed:
             prompt = prompts.standing(self.deck, self._main) + "\n\n" + prompt
@@ -409,6 +561,8 @@ class Lecture:
                 item = await items.get()
                 if isinstance(item, Say):
                     item = (item.text, await self._audio(item.text))
+                elif isinstance(item, Draw) or (isinstance(item, Mark) and item.kind == "slide"):
+                    item = await self._picture(item)
                 await ready.put(item)
                 if item is None or isinstance(item, _HostFailed):
                     return
@@ -435,22 +589,22 @@ class Lecture:
                     turn.failure = item.reason
                     break
                 if isinstance(item, Mark):
-                    turn.marks.append(item)
+                    if item.kind == "go":
+                        await self._go(item.body)
+                    else:
+                        turn.marks.append(item)
                     continue
-                if isinstance(item, Draw):
-                    uid = self.store.utter(self.id, visit, "drawn", item.code, question_id=qid)
-                    self._drawings[f"d{uid}"] = _Drawing(uid, visit, item.code)
-                    self._figure = {"id": f"d{uid}", "code": item.code}
-                    await self._send({"type": "diagram", **self._figure})
+                if isinstance(item, _Picture):
+                    await self._draw(item, turn, question)
                     continue
                 text, audio = item
                 if not audio:
                     # Shown, not heard. The turn carries on.
                     reason = "the speech engine returned no audio"
-                    uid = self.store.utter(self.id, visit, "said", text, failed=reason, question_id=qid)
+                    uid = self.store.utter(self.id, self._visit, "said", text, failed=reason, question_id=qid)
                     await self._send({"type": "unspoken", "id": uid, "text": text, "reason": reason})
                     continue
-                playing = self.store.utter(self.id, visit, "said", text, question_id=qid)
+                playing = self.store.utter(self.id, self._visit, "said", text, question_id=qid)
                 seconds = speech.duration_s(audio)
                 await self._set_state(SPEAKING)
                 await self._send({"type": "sentence", "id": playing, "text": text, "seconds": round(seconds, 3),
@@ -467,10 +621,42 @@ class Lecture:
             self._instructed = True
             self.store.set_host_session(self.id, self.host.session)
         if turn.stopped:
-            await self._cut_off(playing, unheard, items, ready, splitter, visit, qid)
-        elif turn.failure is None:
+            await self._cut_off(playing, unheard, items, ready, splitter, self._visit, qid)
+        if turn.stopped:
+            await self._return(0)  # a stopped lecturer isn't left standing on a detour
+        if not turn.stopped and turn.failure is None:
             await self._set_state(LISTENING)
         return turn
+
+    async def _picture(self, item: Draw | Mark) -> _Picture:
+        """Read what the lecturer wrote to be looked at, and check it can be drawn."""
+        if isinstance(item, Draw):
+            fields, source, own_slide = {"diagram": item.code}, item.code, False
+        else:
+            fields, source, own_slide = _slide_fields(item.body), item.body, True
+        check = await asyncio.to_thread(self._check, diagram=fields.get("diagram", ""), math=fields.get("math", ""))
+        return _Picture(fields, check, own_slide, source)
+
+    async def _draw(self, picture: _Picture, turn: _Turn, question: Question | None) -> None:
+        """Put something the lecturer wrote on the screen, at the point its speech reached it."""
+        qid = question.id if question else None
+        shown = picture.fields.get("diagram") or picture.source
+        if picture.check.checked and picture.check.error:
+            # Held to the same rule as a prepared slide: what can't be drawn isn't shown.
+            self.store.utter(self.id, self._visit, "drawn", shown, failed=picture.check.error, question_id=qid)
+            turn.failed = (picture.source, picture.check.error)
+            await self._send({"type": "warn", "message": "A diagram couldn't be drawn."})
+        elif picture.own_slide or question is not None:
+            # An answer that needs a picture makes a slide, kept with the deck.
+            if any(picture.fields.get(k) for k in ("text", "diagram", "code", "math")):
+                await self._make_up(picture, question)
+        else:
+            uid = self.store.utter(self.id, self._visit, "drawn", shown, question_id=qid)
+            drawing = _Drawing(uid, self._visit, shown, checked=picture.check.checked)
+            self._drawings[f"d{uid}"] = drawing
+            turn.drawings.append(drawing)
+            self._figure = {"id": f"d{uid}", "code": shown}
+            await self._send({"type": "diagram", **self._figure})
 
     async def _cut_off(self, playing: int | None, unsaid: list[str], items: asyncio.Queue,
                        ready: asyncio.Queue, splitter: Splitter, visit: int, qid: int | None) -> None:
@@ -536,3 +722,30 @@ class Lecture:
 
 
 _STOPPED = object()
+
+
+_SECTION = re.compile(r"^(title|text|diagram|code|language|math)\s*:\s*(.*)$", re.I)
+
+
+def _slide_fields(body: str) -> dict:
+    """What a ```slide block holds: each part starts with a line naming it, and
+    runs until the next such line.
+
+        title: How a question moves
+        diagram:
+        flowchart LR
+          A --> B
+    """
+    fields: dict[str, list[str]] = {}
+    current = None
+    for line in body.splitlines():
+        found = _SECTION.match(line)
+        if found:
+            current = found.group(1).lower()
+            fields[current] = [found.group(2)] if found.group(2).strip() else []
+        elif current is not None:
+            fields[current].append(line)
+    out = {name: "\n".join(lines).strip() for name, lines in fields.items()}
+    if "language" in out:
+        out["code_language"] = out.pop("language")
+    return {name: value for name, value in out.items() if value}

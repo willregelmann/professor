@@ -5,8 +5,9 @@ Agent SDK and Hermes) and pass calls through here. Every result is JSON. A tool
 that fails says why, in terms the agent can act on: a slide that can't be shown
 comes back as something to fix, never as a success.
 
-So far: the read tools and the prepare tools. The tools that act on a lecture in
-progress come with Navigate.
+So far: the read tools and the prepare tools. A lecturer acts on a lecture in
+progress by marks in its speech; the tools of the same names come with the hosts
+that can call a tool mid-turn.
 """
 from __future__ import annotations
 
@@ -121,8 +122,13 @@ class Tools:
 
     def _slide_line(self, slide: Slide) -> dict:
         shows = [what for what in ("text", "diagram", "code", "math") if getattr(slide, what)]
-        return {"slide": slide.id, "title": slide.title, "seconds": slide.seconds,
+        line = {"slide": slide.id, "title": slide.title, "seconds": slide.seconds,
                 "shows": shows, "sources": len(slide.sources), "show": _show(slide)}
+        if slide.origin == "made_up":
+            # Made up during a lecture: it stays beside the main line until someone puts it there.
+            line["made_up"] = {"beside_slide": slide.anchor_slide_id,
+                               "for_question": slide.question_id and self.store.question(slide.question_id).text}
+        return line
 
     def _deck(self, deck: int | None = None) -> dict:
         if deck is None:

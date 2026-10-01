@@ -41,7 +41,26 @@ STANDING = (
     "with a line ```.\n"
     "These blocks are never spoken. If you write neither, the question counts as answered. When a "
     "question is really a request about pace, such as \"slower\" or \"less detail\", do not discuss it: "
-    "say \"of course\" in a few words and do it from then on."
+    "say \"of course\" in a few words and do it from then on.\n\n"
+    "MOVING AROUND. The next slide comes up by itself when you finish one; you never need to ask for "
+    "it. You can also change what is on the screen, with a block that starts with a line ```go, holds "
+    "one line, and ends with a line ```. That line is one of:\n"
+    "a slide's number, to show that slide while you talk about it;\n"
+    "return, to go back to where you were;\n"
+    "next, to leave the slide you are on unfinished and move on, when the room asks you to skip it;\n"
+    "from and a number (for example: from 2), to carry the lecture on from that slide.\n"
+    "Showing a slide this way is a detour, and so is a slide or diagram you make while answering. "
+    "ALWAYS say out loud where you are going before the block (\"let me go back to the diagram on "
+    "slide two\"). End every detour yourself: when you have finished with it, say that you are going "
+    "back (\"back to slide three\") and then write the return block. Never move silently. "
+    "When the room asks you to go back to something or to skip something, do it; do not just talk "
+    "about it.\n\n"
+    "A SLIDE OF YOUR OWN. When an answer deserves something to look at, you can make a slide on the "
+    "spot. Say that you are putting something on the screen, then write a block that starts with a "
+    "line ```slide and ends with a line ```. Inside it, write a line \"title: \" with a short title, "
+    "then any of \"text:\", \"diagram:\" (Mermaid, by the rules above) and \"code:\", each on its own "
+    "line and followed by its content. The slide is shown as a detour and kept with the deck. A plain "
+    "```mermaid block while you are answering a question does the same, with the question as its title."
 )
 
 
@@ -66,8 +85,10 @@ def _seconds(deck: Deck, slide: Slide, n: int) -> int | None:
     return round(deck.minutes * 60 / n) if deck.minutes and n else None
 
 
-def present(deck: Deck, slide: Slide, index: int, n: int, already_said: list[Utterance]) -> str:
-    """The lecture has reached a slide."""
+def present(deck: Deck, slide: Slide, index: int, n: int, already_said: list[Utterance], *,
+            before: str = "") -> str:
+    """The lecture has reached a slide. `before` is what this lecture said the
+    last time it gave this slide, if it has been here already."""
     seconds = _seconds(deck, slide, n)
     # A length in words holds a lecturer to time far better than one in seconds does.
     length = (f", in about {seconds} seconds of speech, which is at most about {round(seconds * WORDS_PER_S, -1):.0f} "
@@ -91,6 +112,10 @@ def present(deck: Deck, slide: Slide, index: int, n: int, already_said: list[Utt
                  f"not draw another:\n{slide.diagram}")
     if slide.sources:
         text += "\n\nThe slide cites: " + "; ".join(slide.sources)
+    if before:
+        text += ("\n\nYou have ALREADY given this slide once in this lecture, and the room has come back to "
+                 "it. Do not give it again from the top. Say that you are back on it, then go over it "
+                 f"more briefly, or differently, in the light of why you came back. What you said then:\n{before}")
     heard, lost = [], []  # what the room has heard of this slide, and what was cut off since
     for u in already_said:
         if u.kind != "said" or u.question_id is not None:
@@ -115,9 +140,16 @@ def _asker(question: Question) -> str:
 
 
 def answer(question: Question, asked_on: Slide | None, just_said: str, *, on_slide: Slide | None,
-           slides: list[Slide], can_put_off: bool) -> str:
-    """A question is being taken."""
-    text = f"{_asker(question)} asks, in the chat: {question.text}"
+           slides: list[Slide], can_put_off: bool, stopped_after: str | None = None) -> str:
+    """A question is being taken. `stopped_after` is the last thing the room heard
+    of the current slide, when a listener stopped the lecturer partway through it."""
+    text = ""
+    if stopped_after is not None:
+        heard = (f"The last thing the room heard was: \"{stopped_after}\"" if stopped_after
+                 else "The room heard nothing of it.")
+        text = ("A listener stopped you partway through this slide. You are NOT finished with it. "
+                f"{heard} Whatever you wrote after that was never heard.\n\n")
+    text += f"{_asker(question)} asks, in the chat: {question.text}"
     if asked_on is not None and (on_slide is None or asked_on.id != on_slide.id):
         text += f"\n\nIt was asked earlier, while the slide \"{asked_on.title}\" was showing"
         text += f", just after you said: \"{just_said}\"" if just_said else "."
@@ -148,6 +180,13 @@ def come_back(question: Question, words_then: str, *, at_end: bool) -> str:
              "have just presented already answered it, say so in a sentence or two and do not go over it "
              "again. Otherwise answer it briefly (under 30 seconds of speech, so at most about 75 words). It cannot be put off again.")
     return text
+
+
+def close_detour(index: int, title: str) -> str:
+    """The lecturer's turn ended with a detour still on the screen."""
+    return ("Your turn ended with a detour still on the screen. The room must hear where the screen is going "
+            f"before it goes. In one short sentence, say that you are going back to slide {index + 1}, "
+            f"\"{title}\". Say nothing else.")
 
 
 def redraw(code: str, error: str) -> str:

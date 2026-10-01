@@ -60,7 +60,7 @@ async def test_a_question_is_heard_at_once_taken_at_the_break_and_answered_in_wr
 
     # The lecturer was told who asked, what, and the moment it was asked.
     prompt = room.host.prompts[1]
-    assert prompt.startswith("Priya asks, in the chat: Why two sentences?")
+    assert prompt.startswith("Priya asks, in the chat: Why two sentences?")     # nobody stopped it
     assert 'just after you said: "Welcome to the first slide of this lecture."' in prompt
     assert 'The slides still to come are slide 2 ("Two"), slide 3 ("Three").' in prompt
 
@@ -167,6 +167,11 @@ async def test_a_listener_can_stop_the_lecturer_mid_sentence_and_it_picks_the_sl
     assert ("said", "This is the second sentence, which gets cut off.", "cut off") in said
     assert ("said", "This third sentence is never reached at all. Nor is this fourth and final one.",
             "unsaid") in said
+    # The lecturer's own record says it said the whole slide, so it's told what the room heard.
+    assert room.host.prompts[1].startswith(
+        "A listener stopped you partway through this slide. You are NOT finished with it. The last thing the "
+        "room heard was: \"This is the first sentence of a long slide.\" Whatever you wrote after that was "
+        "never heard.\n\nPriya asks, in the chat: Wait, why?")
     pick_up = room.host.prompts[2]
     assert "A listener stopped you there." in pick_up
     assert "do not repeat it. Pick up from where it stops:\nThis is the first sentence of a long slide." in pick_up

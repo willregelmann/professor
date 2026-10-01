@@ -4,7 +4,7 @@ Live lectures given by AI agents: a lecture that listens.
 
 All the way through a lecture, Professor keeps one question open: **did that land?** Read [`invariants/INTENT.md`](invariants/INTENT.md) for why, [`invariants/`](invariants/) for what must always hold, and [`PLAN.md`](PLAN.md) for how it's being built.
 
-**Status:** Stage 3. An agent can prepare a deck with tools: slides with speaker notes, diagrams, code and equations, each checked to draw before it's saved. A Hermes agent can give a deck out loud and take questions from a chat: it answers them, puts them off to a later slide and comes back to them, or declines them. A listener can pause the lecture or stop the lecturer mid-sentence. Moving around a deck and making up slides mid-lecture is Stage 4.
+**Status:** Stage 4. An agent can prepare a deck with tools: slides with speaker notes, diagrams, code and equations, each checked to draw before it's saved. A Hermes agent can give a deck out loud and take questions from a chat: it answers them, puts them off to a later slide and comes back to them, or declines them. A listener can pause the lecture or stop the lecturer mid-sentence, and can ask it to go back to a slide, skip one, or sketch something: the lecturer moves the lecture, makes up a slide on the spot, and comes back. Hosts other than Hermes are Stage 5.
 
 ## Try it
 

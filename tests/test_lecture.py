@@ -11,7 +11,13 @@ from bench import listener, metrics
 from professor.hosts.fake import FakeHost
 from professor.lecture import Lecture
 from professor.server import make_app
+from professor.showcheck import Check
 from professor.store import Store
+
+
+def unchecked(**_):
+    """A machine with no browser: nothing can be checked, so a page is the first to try."""
+    return Check(checked=False, error="no browser was found")
 
 CLIP = b"\x00" * 900  # 0.15 seconds of 48 kbit/s audio
 
@@ -24,7 +30,8 @@ SLIDE_3 = "This is the last slide of the deck. After it the floor is open."
 class Room:
     """A deck, a lecture on the real server, and a way to sit in on it."""
 
-    def __init__(self, replies, *, speak=None, slides=None, host=None, heartbeat_s=30, **lecture_options):
+    def __init__(self, replies, *, speak=None, slides=None, host=None, heartbeat_s=30, check=unchecked,
+                 **lecture_options):
         self.store = Store()
         self.deck = self.store.create_deck("How it fits together", audience="the test suite", minutes=1)
         for kwargs in slides or [{"title": "One"}, {"title": "Two"}, {"title": "Three"}]:
@@ -39,7 +46,8 @@ class Room:
         options = {"pause_between_s": 0.05, "retry_delays_s": (0.05, 0.05), "draw_report_grace_s": 0.1,
                    "text_timeout_s": 2.0, **lecture_options}
         self.lecture_id = self.store.create_lecture(self.deck.id, "fake")
-        self.lecture = Lecture(self.store, self.lecture_id, self.host, speak=speak or default_speak, **options)
+        self.lecture = Lecture(self.store, self.lecture_id, self.host, speak=speak or default_speak,
+                               check=check, **options)
         self.server = TestServer(make_app(self.lecture, heartbeat_s=heartbeat_s))
 
     async def __aenter__(self):

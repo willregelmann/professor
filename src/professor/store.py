@@ -97,6 +97,10 @@ ALTER TABLE utterances ADD COLUMN question_id INTEGER REFERENCES questions(id);
 -- 1 once a revision has been drawn in a check and came out right.
 ALTER TABLE slide_revisions ADD COLUMN show_checked INTEGER NOT NULL DEFAULT 0;
 """,
+    4: """
+-- The question a made-up slide was made for.
+ALTER TABLE slides ADD COLUMN question_id INTEGER REFERENCES questions(id);
+""",
 }
 VERSION = max(MIGRATIONS)
 
@@ -140,6 +144,8 @@ class Slide:
     show_checked: bool = False      # a check drew it and it came out right
     code_language: str = ""
     math: str = ""
+    anchor_slide_id: int | None = None  # for a made-up slide: the slide the lecture was on
+    question_id: int | None = None      # for a made-up slide: the question it was made for
 
     def shown(self) -> dict:
         """What a listener sees. Never the notes. A diagram or equation that's known
@@ -238,15 +244,16 @@ class Store:
     def add_slide(self, deck_id: int, *, title: str, notes: str, text: str = "", diagram: str = "",
                   code: str = "", code_language: str = "", math: str = "", sources: list[str] | None = None,
                   seconds: int | None = None, show_checked: bool = False, show_error: str | None = None,
-                  origin: str = "prepared", on_main_line: bool = True) -> Slide:
+                  origin: str = "prepared", on_main_line: bool = True,
+                  anchor_slide_id: int | None = None, question_id: int | None = None) -> Slide:
         """Add a slide. On the main line it goes at the end; otherwise it sits beside it."""
         position = None
         if on_main_line:
             position = self.db.execute("SELECT COALESCE(MAX(position), -1) + 1 FROM slides WHERE deck_id = ?",
                                        (deck_id,)).fetchone()[0]
         slide_id = self._insert(
-            "INSERT INTO slides (deck_id, position, origin, created_at) VALUES (?, ?, ?, ?)",
-            deck_id, position, origin, _now())
+            "INSERT INTO slides (deck_id, position, anchor_slide_id, question_id, origin, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)", deck_id, position, anchor_slide_id, question_id, origin, _now())
         self.revise_slide(slide_id, title=title, notes=notes, text=text, diagram=diagram, code=code,
                           code_language=code_language, math=math, sources=sources, seconds=seconds,
                           show_checked=show_checked, show_error=show_error)
@@ -266,7 +273,8 @@ class Store:
         return self.slide(slide_id)
 
     _SLIDE = """
-        SELECT s.id, s.deck_id, s.position, s.origin, r.id AS revision_id, r.title, r.shown, r.notes,
+        SELECT s.id, s.deck_id, s.position, s.origin, s.anchor_slide_id, s.question_id,
+               r.id AS revision_id, r.title, r.shown, r.notes,
                r.sources, r.seconds, r.show_error, r.show_checked
         FROM slides s JOIN slide_revisions r ON r.slide_id = s.id
         WHERE r.id = (SELECT MAX(id) FROM slide_revisions WHERE slide_id = s.id)
@@ -280,7 +288,8 @@ class Store:
                      diagram=shown.get("diagram", ""), code=shown.get("code", ""), notes=row["notes"],
                      sources=json.loads(row["sources"]), seconds=row["seconds"], show_error=row["show_error"],
                      show_checked=bool(row["show_checked"]), code_language=shown.get("code_language", ""),
-                     math=shown.get("math", ""))
+                     math=shown.get("math", ""), anchor_slide_id=row["anchor_slide_id"],
+                     question_id=row["question_id"])
 
     def slide(self, slide_id: int) -> Slide:
         row = self.db.execute(self._SLIDE + " AND s.id = ?", (slide_id,)).fetchone()
@@ -431,6 +440,20 @@ class Store:
         return " ".join(row[0] for row in self.db.execute(
             "SELECT text FROM utterances WHERE question_id = ? AND kind = 'said' "
             "AND (failed IS NULL OR failed = 'cut off') ORDER BY id", (question_id,)))
+
+    def made_for(self, question_id: int) -> list[Slide]:
+        """The slides that were made up for a question."""
+        return [self._slide(row) for row in self.db.execute(
+            self._SLIDE + " AND s.question_id = ? ORDER BY s.id", (question_id,))]
+
+    def said_on(self, lecture_id: int, slide_id: int, before_visit: int) -> str:
+        """What this lecture has already said while giving a slide, on earlier visits to it."""
+        return " ".join(row[0] for row in self.db.execute(
+            "SELECT u.text FROM utterances u JOIN visits v ON v.id = u.visit_id "
+            "JOIN slide_revisions r ON r.id = v.slide_revision_id "
+            "WHERE u.lecture_id = ? AND r.slide_id = ? AND v.id < ? AND u.kind = 'said' "
+            "AND u.failed IS NULL AND u.question_id IS NULL ORDER BY u.id",
+            (lecture_id, slide_id, before_visit)))
 
     def moment(self, question: Question) -> tuple[Slide | None, str]:
         """The moment a question was asked: the slide as it was shown then, and

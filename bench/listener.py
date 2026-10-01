@@ -138,7 +138,8 @@ def questions(events: list[dict]) -> list[dict]:
         q = e["question"]
         mine = seen.setdefault(q["id"], {"id": q["id"], "who": q["who"], "text": q["text"], "states": []})
         mine["states"].append((q["state"], e["t"]))
-        mine.update(state=q["state"], until=q["until"], reason=q["reason"], reply=q["reply"])
+        mine.update(state=q["state"], until=q["until"], reason=q["reason"], reply=q["reply"],
+                    slides=q.get("slides", []))
     return list(seen.values())
 
 

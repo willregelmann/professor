@@ -62,6 +62,9 @@ Rules the core enforces without the agent's help:
 - A put-off question is raised again once the slide it was put off to has been given, and at the end of the main line. It can't be put off twice.
 - A question still open when a listener ends the lecture is declined, and says that's why.
 - A drawn block that fails on the page is reported back, and the lecturer gets one more turn to redraw it or carry on without it.
+- The lecture is a stack: its place on the main line, then any detours. A detour left open when a turn ends is closed for the lecturer, the screen goes back to where the lecture left, and its next turn starts by being told so.
+- A made-up slide is drawn in the show check before it's shown. One that fails isn't shown or kept, and the lecturer gets one more turn to draw it again.
+- A listener moves the lecture by asking in the chat. The lecturer does the moving, so every move comes with words.
 - A stop from a listener cancels the turn, silences every page at once, and records the sentence that was cut off and what was written but not reached. The lecture then waits for a question or for "Carry on", and the lecturer is handed the cut-off thought when the slide is picked back up.
 
 ### Speaking, drawing and marking
@@ -72,9 +75,15 @@ Carried over from the prototype: plain spoken prose with a fenced block for anyt
 | ` ```mermaid ` | Draws it when the speech reaches it |
 | ` ```later ` with a slide number, or `end` | Puts the question being answered off until then |
 | ` ```decline ` with a reason | Declines the question being answered, and shows the reason |
+| ` ```go ` with a slide number | Shows that slide as a detour, at that point in the speech |
+| ` ```go ` with `return` | Comes back from the detour it's in |
+| ` ```go ` with `next`, or `from` and a number | Carries the lecture on from the next slide, or from that one, once the turn ends |
+| ` ```slide ` with a title and text, a diagram or code | Makes a slide on the spot, shows it as a detour and keeps it beside the main line |
 | Anything else | Nothing. It's never spoken |
 
-Putting off and declining are marks in the text for now because the agent's tools arrive in Stage 3. The `put_off` and `decline` tools will do the same thing through the same code, and the marks stay for hosts whose tools can't be reached mid-turn.
+A ` ```mermaid ` block written while answering a question is kept as a made-up slide too, under the question. Written while presenting a slide, it's drawn onto that slide.
+
+These are marks in the text, not tool calls, because a lecturer's tools can't be reached mid-turn in every host, and a mark lands at an exact point in the speech. The tools of the same names (`go`, `put_off`, `decline`) arrive with the hosts that can call one mid-turn, and do the same thing through the same code.
 
 ### Speech
 `edge-tts`, as in the prototype, behind a one-function seam (`text → audio`). It needs the network and is an unofficial client of a Microsoft service, so a local engine is the first alternative to try (see Deferred). In Stage 0 it returned no audio for 3 ordinary sentences out of roughly 650, so the core retries a sentence once before showing it as a failure.
@@ -189,6 +198,14 @@ Each adapter does four things: start a turn, yield text as it's produced, cancel
   - a scripted lecture with a detour inside a detour returns to the right slide each time;
   - every move that isn't "next" is announced;
   - the deck's main line is unchanged after any lecture.
+
+- **Result (2026-10-01, `python -m bench.navigate_run`, `/test:run moves-are-announced`):** exit met.
+  - **A detour inside a detour returns to the right slide each time:** by test, with a scripted lecturer going from slide 2 to slide 1, on to a made-up slide, back to slide 1 and back to slide 2. A detour the lecturer forgets to close is closed when its turn ends.
+  - **With Wren, seven lectures of seven** went the same way. Asked for a sketch, it drew one, which was checked, shown as a detour and kept beside the main line under the question. Asked to go back to the memory diagram, it went to slide 2 as a detour and came back to slide 3. Asked to skip the rest of a slide, it moved on, and in six of the seven the slide was recorded as not covered.
+  - **The main line is unchanged after every lecture**, scripted and real.
+  - **Every move that isn't "next" is announced: met, after a fix.** The judge first failed it: when the lecturer left a detour open, the screen went back by itself with nothing said. Now the lecturer gets a turn to say it's going back, and the screen moves after the words. Judged again on a later lecture, all three assertions passed.
+  - **Found and fixed: a stopped lecturer doesn't know what the room heard.** Its host's record holds the whole turn it wrote, so in one lecture Wren said it had "already finished the slide" it was stopped on, then corrected itself. A question taken after a stop now says what the room last heard.
+  - Not built: the `go` tool over MCP (the marks do the same thing), and buttons for a listener to move the lecture without asking.
 
 ### 5. The other hosts
 - **Adapters:** Claude Agent SDK and tools-only.

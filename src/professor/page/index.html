@@ -48,7 +48,8 @@
   .q.answering .chip { border-color: #8fbf7f; color: #8fbf7f; }
   .q.waiting .chip, .q.declined .chip { border-color: #e07a5f; color: #e0a080; }
   .q .reply { color: #c9b79f; margin-top: 6px; white-space: pre-wrap; }
-  .q .reply:empty { display: none; }
+  .q .made { color: #a08a70; margin-top: 4px; font-size: 13px; }
+  .q .reply:empty, .q .made:empty { display: none; }
   #ask { display: flex; flex-direction: column; gap: 8px; padding: 12px 16px; border-top: 1px solid #2f2720; }
   input, textarea { font: inherit; font-size: 15px; padding: 6px 10px; border-radius: 6px; border: 1px solid #5a4a3a;
                     background: #120f0c; color: inherit; }
@@ -170,7 +171,7 @@ function showQuestion(q) {
   if (!card) {
     card = document.createElement("div");
     card.id = "question-" + q.id;
-    for (const part of ["who", "asked", "chip", "reply"]) {
+    for (const part of ["who", "asked", "chip", "reply", "made"]) {
       const div = document.createElement("div");
       div.className = part;
       card.appendChild(div);
@@ -182,6 +183,7 @@ function showQuestion(q) {
   card.querySelector(".asked").textContent = q.text;
   card.querySelector(".chip").textContent = (QUESTION_STATES[q.state] || (() => q.state))(q);
   card.querySelector(".reply").textContent = q.reply;   // what was said out loud, kept in writing
+  card.querySelector(".made").textContent = (q.slides || []).length ? "Slide made: " + q.slides.join(" · ") : "";
   card.scrollIntoView({block: "nearest"});
 }
 
@@ -216,7 +218,9 @@ async function showFigure(code, onFail) {
 
 function showPlace() {
   if (!place) { $("place").textContent = ""; return; }
-  $("place").textContent = `${place.index + 1} / ${place.of}` + (place.detour ? " · detour" : "")
+  // Where the lecture is: how far through the main line, and whether this is a detour.
+  $("place").textContent = (place.made_up ? "A slide made up just now" : `${place.index + 1} / ${place.of}`)
+    + (place.detour ? ` · a detour from slide ${place.from + 1}` : "")
     + (place.floor ? " · end of the main line" : "");
 }
 

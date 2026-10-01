@@ -175,3 +175,20 @@ def test_with_no_browser_the_check_says_it_could_not_be_made(monkeypatch):
     assert not result.checked and not result.ok and "no browser was found" in result.error
     assert showcheck.check().ok                                   # nothing to draw is nothing to fail
     assert shutil.which("no-such-browser") is None
+
+
+def test_a_made_up_slide_is_listed_beside_the_main_line_with_its_question(t):
+    store = t.store
+    call(t, "describe", subject="Subject")
+    one = call(t, "write_slide", deck=1, title="One", notes="n")[0]["slide"]
+    lecture = store.create_lecture(1, "fake")
+    store.arrive(lecture, store.slide(one), "start")
+    q = store.ask(lecture, "Priya", "Can I have a picture?")
+    made = store.add_slide(1, title="The picture", notes="Made up during a lecture.", diagram="flowchart LR\n A --> B",
+                           origin="made_up", on_main_line=False, anchor_slide_id=one, question_id=q.id)
+    deck, _ = call(t, "deck", deck=1)
+    assert [s["title"] for s in deck["main_line"]] == ["One"]
+    assert deck["beside"][0]["made_up"] == {"beside_slide": one, "for_question": "Can I have a picture?"}
+    # Putting it on the main line is preparing, and happens only on purpose.
+    deck, _ = call(t, "arrange", deck=1, main_line=[one, made.id])
+    assert [s["title"] for s in deck["main_line"]] == ["One", "The picture"] and deck["beside"] == []
