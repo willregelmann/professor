@@ -1,0 +1,23 @@
+{
+  "title": "Professor in three slides",
+  "audience": "engineers who have never seen Professor",
+  "background": "Professor is a small open project for live lectures given by AI agents. An agent speaks from slides and speaker notes, out loud, to listeners in a browser, and takes their typed questions. Whoever is giving this lecture is an AI agent doing exactly that, right now. It is at an early stage: one lecture at a time, for listeners on the local network. Questions are typed, not spoken. Nothing here says who uses it, how many people have tried it, or anything about the building, the network or the people in the room; if asked about those, the lecturer does not know.",
+  "slides": [
+    {
+      "title": "A lecture that listens",
+      "seconds": 30,
+      "notes": "Professor is a lecture given live by an AI agent. Nothing is recorded ahead: each slide's words are made at the moment they are spoken, from speaker notes, not from a script. The point of doing it live is that the room can talk back: listeners type questions in a chat beside the slides, and the lecturer answers, or changes course.\n\nFor questions: Is it a recording? No. The words are generated as they are spoken and turned into speech one sentence at a time. Why notes and not a script? A script cannot respond to the room; notes say what to cover and leave the wording free."
+    },
+    {
+      "title": "What becomes of a question",
+      "seconds": 35,
+      "diagram": "flowchart LR\n  H[\"heard\"] --> A[\"being answered\"]\n  A --> D[\"answered\"]\n  A --> P[\"put off\"]\n  A --> X[\"declined\"]\n  P -->|\"its slide is reached\"| A",
+      "notes": "A question is shown as heard the moment it is sent, before the lecturer has seen it. It is taken at the end of the current slide. Then it ends one of three ways: answered, put off to a later slide, or declined with a reason. A question that was put off is brought back when the lecture reaches that slide. No question is ever dropped.\n\nFor questions: 'Put off' means the lecturer said out loud that a later slide covers it and named the slide; the question then shows as put off until that slide, and is raised again after that slide has been given. A listener can also press Stop to cut the lecturer off mid-sentence and be heard straight away."
+    },
+    {
+      "title": "When things go wrong",
+      "seconds": 35,
+      "notes": "Professor assumes things will fail and shows it when they do. If the speech engine returns no audio for a sentence, it is tried once more; if that fails too, the sentence is shown in writing as unspoken and the lecture carries on. If a diagram cannot be drawn, the room sees that it failed and the lecturer gets one more turn to draw it again. If the lecturer cannot be reached at all, the page says the lecture cannot go on and why, and keeps trying.\n\nFor questions: The design rule is that a failure is shown where the room can see it and never ends the lecture by itself. The speech engine is an online service, so losing the network is the commonest cause of an unspoken sentence."
+    }
+  ]
+}

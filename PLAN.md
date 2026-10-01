@@ -101,10 +101,10 @@ Each adapter does four things: start a turn, yield text as it's produced, cancel
 | Host | Turn and speech | Session | Status |
 |---|---|---|---|
 | Hermes | Streaming chat completions on the gateway | `X-Hermes-Session-Id` | Built in Stage 2. Gives whole lectures with questions |
-| Claude Agent SDK | A query with partial messages turned on | The SDK's session resume | Speech measured in Stage 0; resume untested |
-| Tools only (e.g. a Claude Code session) | The agent calls `say` with a passage and `listen` to wait for the next moment | The host's own | Speech measured in Stage 0 through the SDK; a real Claude Code session and a long `listen` are untested |
+| Claude Agent SDK | A query with partial messages turned on. A turn that was cut short is read past before the next one starts | The SDK's own, one client for the whole lecture | Built in Stage 5. Gives whole lectures with questions. Resume untested |
+| Tools only (e.g. a Claude Code session running `/give`) | The agent calls `say` with a passage and `listen` to wait for the next moment | The host's own | Built in Stage 5. Gives whole lectures through an SDK-driven agent and the real tool server. An interactive Claude Code session is untested |
 
-`say` and `listen` belong to the tools-only adapter. They aren't part of the agent's tool set, and the other adapters never expose them.
+`say` and `listen` belong to the tools-only adapter. They aren't part of the agent's tool set, and the other adapters never expose them. The tool server offers them only when started with `--lecturer`, and they reach the lecture over HTTP on the same machine: whoever can call `say` speaks as the lecturer, so nothing off the machine can. `listen` returns "nothing yet" after 50 seconds and the agent calls it again, so no single tool call has to wait out a long silence.
 
 ### Lessons carried over from the prototype
 - **Empty audio deadlocks the player.** The speech engine can return nothing without raising, and Chrome fires no event for an empty clip. The server never sends one; the page keeps a watchdog.
@@ -211,6 +211,12 @@ Each adapter does four things: start a turn, yield text as it's produced, cancel
 - **Adapters:** Claude Agent SDK and tools-only.
 - **Exit:** the same deck and the same scripted questions give the same question states, the same path and the same kept record in all three hosts. Speed may differ, and the page shows it.
 
+- **Result (2026-10-01, `python -m bench.lecture_run --deck parity`):** exit met.
+  - **By test, exactly:** one scripted lecture (three slides, a question answered with a made-up slide, one put off and come back to, one declined) leaves the identical record through the fake, Hermes, Claude and tools-only adapters: the same path, the same sentences, the same question states and replies, the same made-up slide.
+  - **With real lecturers:** a three-slide deck about Professor, given twice through each of Wren, the Claude Agent SDK, and a Claude agent whose only tools were `say` and `listen`. In all six lectures the four questions went the same way: one answered, one put off to slide 3 and come back to, one declined, and one answered after a stop. Every slide was covered and the path was the same.
+  - **Speed differs, and the page shows it as "thinking":** median seconds to first audio on the first slide were 2.2 (Claude SDK), 4.7 (tools only) and 6.5 (Wren); on later slides 2.2, 2.8 and 4.5.
+  - Not built: the lecture tools (`go`, `put_off`, `decline`) as tool calls. Every host uses the marks, which land at an exact point in the speech; a tool call arrives out of step with what the room has heard so far.
+
 ### 6. Resume and improving a deck
 - **[Resume](invariants/capabilities/RESUME.md):** across a pause, a server restart and a change of host, with a recap sized to the gap.
 - **Corrections:** `correct`, and Prepare applying or setting them aside.
@@ -223,6 +229,7 @@ Each adapter does four things: start a turn, yield text as it's produced, cancel
 - A local speech engine, so a lecture doesn't depend on the network
 - Letting the lecturer decide mid-sentence when to take a question. Until then a question is taken at the end of the current slide, or straight away after a stop.
 - The lecturer asking the room something, as its own kind of entry in the chat
+- The lecture tools (`go`, `put_off`, `decline`, `ask`, `end`) as tool calls, for hosts that can call one mid-turn. They'd have to be placed in the speech where they were called, not when they arrived.
 - A host adding the tool server to its own configuration. Stage 3 loads it into Claude Code through the plugin; Wren's Hermes configuration is untouched, because a lecturer needs no tools yet.
 - Listeners on other networks, and anything beyond trusting the local network
 - Exporting a deck to another format

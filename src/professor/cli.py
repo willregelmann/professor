@@ -4,6 +4,8 @@
     professor decks
     professor serve --deck 1 --host fake
     professor serve --deck 1 --host hermes --hermes-url http://ha-pi.local:8642
+    professor serve --deck 1 --host claude
+    professor serve --deck 1 --host tools      # then, in Claude Code: /give
     professor mcp
 """
 from __future__ import annotations
@@ -17,6 +19,8 @@ from aiohttp import web
 
 from professor import importers, mcp_server, store as store_module
 from professor.hosts import hermes
+from professor.hosts.claude_sdk import ClaudeHost
+from professor.hosts.tools_only import ToolsOnlyHost
 from professor.hosts.fake import NotesReader
 from professor.lecture import Lecture
 from professor.server import make_app
@@ -35,13 +39,21 @@ def main(argv: list[str] | None = None) -> None:
     imp.add_argument("--background", default="", help="what the lecturer should stay inside")
 
     sub.add_parser("decks", help="list the decks in the store")
-    sub.add_parser("mcp", help="serve the agent's tools over MCP on stdin and stdout")
+    mcp = sub.add_parser("mcp", help="serve the agent's tools over MCP on stdin and stdout")
+    mcp.add_argument("--lecturer", action="store_true",
+                     help="also offer say and listen, for an agent giving a lecture served with --host tools "
+                          "(at PROFESSOR_URL, default http://127.0.0.1:8770)")
 
     serve = sub.add_parser("serve", help="give a deck: serve the page and run the lecture")
     serve.add_argument("--deck", type=int, required=True)
-    serve.add_argument("--host", choices=["fake", "hermes"], default="fake",
-                       help="where the lecturer lives: a Hermes gateway, or a scripted fake that reads "
-                            "the notes out")
+    serve.add_argument("--host", choices=["fake", "hermes", "claude", "tools"], default="fake",
+                       help="where the lecturer lives: a Hermes gateway; Claude, through the Agent SDK; "
+                            "an agent that speaks through tools, such as a Claude Code session running "
+                            "/give; or a scripted fake that reads the notes out")
+    serve.add_argument("--claude-model", default="claude-opus-5-5")
+    serve.add_argument("--claude-effort", default="medium")
+    serve.add_argument("--claude-cwd", type=Path, default=None,
+                       help="let a Claude lecturer read files under this directory to check things live")
     serve.add_argument("--hermes-url", default=os.environ.get("HERMES_URL", "http://127.0.0.1:8642"),
                        help="the Hermes gateway (default: %(default)s)")
     serve.add_argument("--hermes-env", type=Path, default=None,
@@ -52,7 +64,7 @@ def main(argv: list[str] | None = None) -> None:
 
     args = ap.parse_args(argv)
     if args.command == "mcp":
-        mcp_server.serve(args.db)
+        mcp_server.serve(args.db, lecturer=args.lecturer)
         return
     store = Store(args.db)
 
@@ -82,6 +94,10 @@ def main(argv: list[str] | None = None) -> None:
                 host = hermes.HermesHost(args.hermes_url, hermes.find_key(args.hermes_env))
             except (OSError, ValueError) as exc:
                 sys.exit(f"No key for the Hermes gateway: {exc}. Set HERMES_API_KEY or pass --hermes-env.")
+        elif args.host == "claude":
+            host = ClaudeHost(model=args.claude_model, effort=args.claude_effort, cwd=args.claude_cwd)
+        elif args.host == "tools":
+            host = ToolsOnlyHost()
         else:
             host = NotesReader()
 

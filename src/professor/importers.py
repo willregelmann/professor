@@ -19,7 +19,9 @@ def import_prototype_deck(store: Store, path: Path | str, *, audience: str = "",
     data = json.loads(Path(path).read_text())
     slides = data["slides"]
     seconds = sum(s.get("seconds", 45) for s in slides)
-    deck = store.create_deck(data["title"], audience=audience, background=background,
+    # A deck file can say who it's for and what to stay inside; what's passed in wins.
+    deck = store.create_deck(data["title"], audience=audience or data.get("audience", ""),
+                             background=background or data.get("background", ""),
                              minutes=max(1, round(seconds / 60)))
     for s in slides:
         # Imported slides are drawn in a check like any others. One that fails is

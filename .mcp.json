@@ -2,7 +2,10 @@
   "mcpServers": {
     "professor": {
       "command": "${CLAUDE_PLUGIN_ROOT}/bin/professor",
-      "args": ["mcp"]
+      "args": [
+        "mcp",
+        "--lecturer"
+      ]
     }
   }
 }
