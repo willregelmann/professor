@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Wren presents</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; font: 18px/1.5 system-ui, sans-serif; background: #15120f; color: #eee7dc; }
+  #stage { height: 74vh; display: flex; gap: 3vw; padding: 0 5vw; box-sizing: border-box; }
+  #text { flex: 1 1 100%; display: flex; flex-direction: column; justify-content: center; min-width: 0; transition: flex-basis .35s; }
+  #stage.has-diagram #text { flex-basis: 38%; }
+  #fig { flex: 0 0 0; overflow: hidden; display: flex; align-items: center; justify-content: center; transition: flex-basis .35s; }
+  #stage.has-diagram #fig { flex-basis: 58%; }
+  #fig svg { max-width: 100%; max-height: 70vh; height: auto; }
+  #fig .diagram-error { color: #d89a7a; font-size: 15px; white-space: pre-wrap; font-family: ui-monospace, monospace; }
+  #n { color: #a08a70; font-size: 16px; }
+  #title { font-size: 48px; font-weight: 700; margin: .2em 0; line-height: 1.15; }
+  #stage.has-diagram #title { font-size: 36px; }
+  #caption { font-size: 24px; color: #d8cbb8; min-height: 3em; }
+  #bar { display: flex; gap: 10px; padding: 12px 5vw; background: #1f1a15; align-items: center; flex-wrap: wrap; }
+  button { font: inherit; padding: 6px 14px; border-radius: 6px; border: 1px solid #5a4a3a; background: #2a231c; color: inherit; cursor: pointer; }
+  input { font: inherit; padding: 6px 10px; border-radius: 6px; border: 1px solid #5a4a3a; background: #120f0c; color: inherit; }
+  #q { flex: 1; min-width: 240px; }
+  #status { color: #a08a70; font-size: 14px; padding: 6px 5vw; white-space: pre-wrap; }
+</style>
+<script src="/static/mermaid.min.js"></script>
+</head>
+<body>
+<div id="stage">
+  <div id="text"><div id="n"></div><div id="title">Connecting…</div><div id="caption"></div></div>
+  <div id="fig"></div>
+</div>
+<div id="bar">
+  <button id="start">Start</button><button id="pause">Pause</button><button id="next">Next ▶</button>
+  <button id="clear" title="Hide the diagram">Hide diagram</button>
+  <input id="who" placeholder="name" size="10"><input id="q" placeholder="Ask a question"><button id="ask">Ask</button>
+</div>
+<div id="status"></div>
+<script>
+const $ = id => document.getElementById(id);
+mermaid.initialize({
+  startOnLoad: false, theme: "dark", securityLevel: "strict",
+  themeVariables: { fontSize: "18px", primaryColor: "#2a231c", primaryTextColor: "#eee7dc",
+                    primaryBorderColor: "#a08a70", lineColor: "#c9b79f", background: "#15120f" },
+  flowchart: { useMaxWidth: true, htmlLabels: true }, sequence: { useMaxWidth: true },
+});
+
+const ws = new WebSocket(`ws://${location.host}/ws`);
+ws.binaryType = "arraybuffer";
+let slides = [], cur = -1, auto = false, paused = false, busy = false;
+// ONE ordered queue for everything the talk puts in front of the room: audio clips AND
+// diagrams. A diagram is shown when playback REACHES it, so it lands at the point in the
+// speech where it was introduced, not seconds early while earlier sentences still play.
+const queue = [];
+const questions = [];      // asked while talking; answered at the next break
+let playing = false, pendingCaption = [], turnDone = false, diagramSeq = 0;
+
+function status(t) { $("status").textContent = t; }
+
+async function showDiagram(code) {
+  const fig = $("fig");
+  if (!code) { $("stage").classList.remove("has-diagram"); fig.innerHTML = ""; return; }
+  try {
+    await mermaid.parse(code);                       // throws on bad syntax, renders nothing
+    const { svg } = await mermaid.render(`d${++diagramSeq}`, code);
+    fig.innerHTML = svg;
+  } catch (e) {
+    // A diagram the model got wrong must be VISIBLE as wrong, not a silent blank panel.
+    fig.innerHTML = "";
+    const pre = document.createElement("div");
+    pre.className = "diagram-error";
+    pre.textContent = "Diagram failed to render:\n" + String(e.message || e).slice(0, 300);
+    fig.appendChild(pre);
+    status("diagram error: " + String(e.message || e).split("\n")[0]);
+  }
+  $("stage").classList.add("has-diagram");
+}
+
+function show(i) {
+  cur = i;
+  $("n").textContent = `${i + 1} / ${slides.length}`;
+  $("title").textContent = slides[i].title;
+  $("caption").textContent = "";
+  showDiagram(slides[i].diagram || "");
+}
+
+function playNext() {
+  if (paused || playing) return;
+  if (!queue.length) { if (turnDone) afterTurn(); return; }
+  const item = queue.shift();
+  if (item.kind === "diagram") { showDiagram(item.code); playNext(); return; }
+  playing = true; $("caption").textContent = item.text;
+  const a = new Audio(URL.createObjectURL(item.blob));
+  // BELT: one clip that never fires onended must not deadlock the queue. A zero-byte
+  // or truncated mp3 emits NO events at all in Chrome (no onerror, readyState 0), so
+  // onerror alone is not enough -- the watchdog is what actually breaks the deadlock.
+  // The server half (refusing to send empty audio) is the real fix; this is the belt.
+  let advanced = false;
+  const advance = why => {
+    if (advanced) return;
+    advanced = true;
+    clearTimeout(wd);
+    playing = false;
+    if (why) status("skipped a clip: " + why);
+    playNext();
+  };
+  const wd = setTimeout(() => advance("no audio events in 15s"), 15000);
+  a.onended = () => advance(null);
+  a.onerror = () => advance("decode error");
+  a.play().catch(e => { clearTimeout(wd); advanced = true; playing = false; status("audio blocked: " + e + " (click Resume)"); paused = true; $("pause").textContent = "Resume"; queue.unshift(item); });
+}
+
+function afterTurn() {
+  turnDone = false; busy = false;
+  if (questions.length) { const q = questions.shift(); request({cmd: "question", ...q}); return; }
+  if (auto && cur + 1 < slides.length) { setTimeout(() => { if (!paused && !busy) go(cur + 1); }, 900); }
+  else if (cur + 1 >= slides.length) status("End of deck. Questions welcome.");
+}
+
+function request(obj) { busy = true; turnDone = false; ws.send(JSON.stringify(obj)); }
+function go(i) { show(i); request({cmd: "slide", n: i}); }
+
+ws.onmessage = ev => {
+  if (typeof ev.data !== "string") {
+    const text = pendingCaption.shift() || "";
+    queue.push({kind: "audio", blob: new Blob([ev.data], {type: "audio/mpeg"}), text});
+    playNext(); return;
+  }
+  const m = JSON.parse(ev.data);
+  if (m.type === "deck") { slides = m.slides; $("title").textContent = "Ready"; status("Press Start. Audio plays in this tab: share it with sound."); }
+  else if (m.type === "sentence") pendingCaption.push(m.text);
+  else if (m.type === "diagram") { queue.push({kind: "diagram", code: m.code}); playNext(); }
+  else if (m.type === "done") { status(`first audio ${m.first_audio_s}s · turn ${m.total_s}s · ${m.sentences} sentences · ${m.diagrams || 0} diagrams`); turnDone = true; playNext(); }
+  // A per-sentence problem: the turn is still running, so do NOT end it here.
+  else if (m.type === "warn") status("WARNING: " + m.message);
+  // A turn-fatal failure: the server has stopped this turn, so release it.
+  else if (m.type === "error") { status("ERROR: " + (m.message || m.error)); turnDone = true; playNext(); }
+};
+ws.onclose = () => status("DISCONNECTED from the presenter server. Reload the page.");
+
+$("start").onclick = () => { auto = true; paused = false; if (cur < 0) go(0); };
+$("pause").onclick = () => { paused = !paused; $("pause").textContent = paused ? "Resume" : "Pause"; if (!paused) playNext(); };
+$("next").onclick = () => { if (!busy && cur + 1 < slides.length) go(cur + 1); };
+$("clear").onclick = () => showDiagram("");
+$("ask").onclick = () => {
+  const text = $("q").value.trim(); if (!text) return;
+  const q = {who: $("who").value.trim() || "someone", text}; $("q").value = "";
+  if (busy || playing) { questions.push(q); status(`queued: "${text}" (answered at the next break)`); }
+  else request({cmd: "question", ...q});
+};
+$("q").addEventListener("keydown", e => { if (e.key === "Enter") $("ask").click(); });
+</script>
+</body>
+</html>
