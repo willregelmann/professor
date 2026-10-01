@@ -31,6 +31,50 @@ def playback(clips: list[tuple[float, float]]) -> dict:
     }
 
 
+def unexplained(events: list[dict], tolerance_s: float = 0.3) -> list[str]:
+    """Stretches where what a listener heard and the state they were shown disagreed:
+    silence while the page said "speaking", or speech while it said anything else.
+
+    `events` is what bench.listener.attend recorded. Clips play back to back, each
+    starting when it has arrived and the one before it has finished. A lecture
+    that was paused can't be checked this way, because pausing stops a clip midway.
+    """
+    marks: list[tuple[float, str, object]] = []  # (time, what changed, value)
+    end = 0.0
+    for e in events:
+        if e["type"] == "sentence":
+            begin = max(e["t"], end)
+            end = begin + e["seconds"]
+            marks += [(begin, "audio", True), (end, "audio", False)]
+        elif e["type"] == "state":
+            marks.append((e["t"], "state", e["state"]))
+    if any(value == "paused" for _, kind, value in marks if kind == "state"):
+        raise ValueError("a paused lecture can't be checked for unexplained silence")
+    marks.sort(key=lambda m: m[0])
+
+    out: list[str] = []
+    playing, state, since = False, None, None
+
+    def disagree() -> bool:
+        return state is not None and playing != (state == "speaking")
+
+    for t, kind, value in [*marks, (marks[-1][0] if marks else 0.0, "end", None)]:
+        was, heard, shown = disagree(), playing, state
+        if kind == "audio":
+            playing = value
+        elif kind == "state":
+            state = value
+        now = disagree() and kind != "end"
+        if was and not now:
+            if t - since > tolerance_s:
+                out.append(f"{since:.2f}s to {t:.2f}s: {'speech' if heard else 'silence'} while the state "
+                           f"was \"{shown}\"")
+            since = None
+        elif now and not was:
+            since = t
+    return out
+
+
 def mp3_duration_s(nbytes: int) -> float:
     return nbytes * 8 / MP3_BITS_PER_S
 

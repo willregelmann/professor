@@ -35,9 +35,9 @@ One SQLite file, e.g. `~/.professor/professor.db`, owned by the server.
 
 | Primitive | Storage |
 |---|---|
-| [Deck](invariants/primitives/DECK.md) | `decks`: id, subject, audience, intended length, created_at |
-| [Slide](invariants/primitives/SLIDE.md) | `slides`: id, deck_id, position on the main line (null when beside it), anchor slide and question it was made for (when made up), origin (prepared / made up). `slide_revisions`: slide_id, what's shown, notes, sources, whether it could be shown, created_at. Only ever added to; the latest is current |
-| [Lecture](invariants/primitives/LECTURE.md) | `lectures`: id, deck_id, host, host session handle, state, place, detour stack. `visits`: lecture_id, slide revision, arrived_at, how it got there, covered or skipped. `utterances`: lecture_id, visit, sentence, spoken or cut off, ts. Only ever added to |
+| [Deck](invariants/primitives/DECK.md) | `decks`: id, subject, audience, intended length, background (what the lecturer should stay inside), created_at |
+| [Slide](invariants/primitives/SLIDE.md) | `slides`: id, deck_id, position on the main line (null when beside it), anchor slide and question it was made for (when made up), origin (prepared / made up). `slide_revisions`: slide_id, title, what's shown (text, diagram, code), notes, sources, intended length, why it couldn't be shown (once a page has tried), created_at. Only ever added to; the latest is current |
+| [Lecture](invariants/primitives/LECTURE.md) | `lectures`: id, deck_id, host, host session handle, state, place, detour stack. `visits`: lecture_id, slide revision, arrived_at, how it got there, covered or skipped. `utterances`: lecture_id, visit, said or drawn, the sentence or the drawing, why it wasn't heard or seen (if it wasn't), ts. Only ever added to |
 | [Question](invariants/primitives/QUESTION.md) | `questions`: id, lecture_id, asker, text, the visit and utterance it was asked at, state (heard / being answered / put off / answered / declined), put off until, answer utterances, slide made for it. `corrections`: slide_id, question_id, text, applied / set aside / open |
 
 The invariants only require a lecture to keep its path. This plan also keeps the words (`utterances`), because the page already receives every sentence for captions, the Q&A has to show answers in writing, and a different lecturer resuming needs more than a list of slide numbers.
@@ -48,9 +48,11 @@ The server owns the loop. The agent is asked for one turn at a time.
 1. **A moment arrives:** a slide is reached, a question is taken, a listener stops the lecturer, or a lecture is resumed.
 2. **The core builds the prompt** from the slide's notes, what it shows, and what the lecture has kept. The first turn in a host session carries the standing instructions.
 3. **The adapter starts a turn** and hands back text as it's produced.
-4. **The splitter cuts the text** into sentences and drawn blocks, in order. Each sentence goes to the speech engine and then to the page with its audio. Each drawn block goes to the page at its place in the queue.
+4. **The splitter cuts the text** into sentences and drawn blocks, in order. Each sentence goes to the speech engine ahead of time. The lecture then sends each sentence, with its audio, at the moment it should be heard, and each drawn block at its place between them.
 5. **Tool calls arrive during the turn** over MCP (`go`, `put_off`, `write_slide`…) and change the lecture's state.
 6. **The turn ends.** The core decides what's next: a waiting question, a move the lecturer asked for, or the next slide on the main line after a short pause.
+
+**The lecture keeps the clock, not the page.** It knows how long each clip plays for, so it knows what is being heard now. That gives every listener the same words at the same time, lets a late arrival see the lecture as it is, makes a pause stop the lecture for everyone, and means the state shown ("speaking", "thinking", "listening") is always the lecture's own account of the silence. A page that falls behind catches up when the next sentence arrives.
 
 Rules the core enforces without the agent's help:
 - A question is marked *heard* the moment it's received, before any agent sees it.
@@ -87,6 +89,11 @@ Each adapter does four things: start a turn, yield text as it's produced, cancel
 - **Order is one queue.** Audio and drawings share a single ordered queue on the page, so a picture lands where the speech introduced it.
 - **Keys stay on the server.** The gateway key is read at run time and never sent to the page.
 
+### Lessons from Stage 1
+- **Heartbeats and compression don't mix.** With both on, aiohttp 3.14 rejects the first frame a browser sends after a heartbeat and drops the listener. Compression is off; the audio is already compressed.
+- **A background tab is a slow tab.** Browsers throttle timers in a tab nobody is looking at, so a page can't be trusted to keep time. The lecture keeps the clock and the page catches up.
+- **A page that loses the lecture comes back by itself.** Reconnecting is the same as arriving late.
+
 ## Stages
 
 ### 0. Bring the prototype home, harness and baseline
@@ -118,6 +125,13 @@ Each adapter does four things: start a turn, yield text as it's produced, cancel
   - an empty audio clip, a broken diagram and an unreachable host each show up on the page, and none stalls the lecture;
   - the page is never silent without a state that explains it.
 
+- **Result (2026-10-01):** exit met against the fake host. `tests/test_lecture.py` holds one test per criterion, each judged from what a headless listener was sent by the real server:
+  - the imported deck plays end to end with real speech, with no stretch where what was heard and the state shown disagreed;
+  - a sentence with no audio (after one retry), a diagram that won't draw, a host that refuses, a host lost mid-slide and a host that never answers each show on the page, and the lecture carries on or says it can't;
+  - a diagram the lecturer drew that fails is reported back, and the lecturer gets one more turn to redraw it.
+  - The page was also run in Chrome against a scripted lecturer: slides, captions, the diagram, the drawing error, the "can't go on" state and the end of the main line all showed correctly. The tab was in the background, so sound itself was not heard.
+  - Not built yet: equations and code highlighting on the page. They move to Stage 3, when Prepare first makes slides that need them.
+
 ### 2. Hermes and Q&A
 - **Hermes adapter**, lifted from the prototype.
 - **[Answer](invariants/capabilities/ANSWER.md):** the five question states, `put_off` and `decline`, put-off questions raised again, stop.
@@ -129,6 +143,7 @@ Each adapter does four things: start a turn, yield text as it's produced, cancel
 
 ### 3. Agent tools and Prepare
 - **MCP:** the read tools and the prepare tools, served by the server, with a stdio entry for hosts that only load local commands.
+- **Page:** equations (KaTeX) and code highlighting.
 - **[Prepare](invariants/capabilities/PREPARE.md):** `describe`, `write_slide` with the show check, `arrange`.
 - **Plugin:** the preparing skill and `/lecture`.
 - **Exit:**

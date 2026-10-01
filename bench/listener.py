@@ -1,13 +1,18 @@
 """A headless listener: plays the page's role over the websocket and records what
 a listener would have experienced.
 
-It speaks the prototype's protocol (prototype/index.html), so it measures the
-prototype today and the real server once that keeps the same protocol.
+It speaks two protocols. Against the prototype (prototype/index.html) it drives
+each turn itself, as the prototype's page does:
 
     python -m bench.listener --url http://ha-pi.local:8770/ws --host hermes --runs 5
 
 Each run is a fresh connection, which is a fresh host session: a slide turn that
 carries the standing instructions, a question, then a second slide.
+
+Against Professor's own server it presses Start and sits through the lecture,
+which paces itself:
+
+    python -m bench.listener --attend --url http://localhost:8770/ws --host fake
 """
 from __future__ import annotations
 
@@ -81,15 +86,92 @@ async def session(url: str, script=SCRIPT) -> list[tuple[str, dict]]:
     return out
 
 
+async def attend(url: str, *, draw_fails=None, on_event=None, start: bool = True,
+                 timeout_s: float = 900) -> dict:
+    """Sit through a lecture on Professor's server, from Start to the end of the
+    main line, and record everything a listener was sent and when.
+
+    `draw_fails(code)` stands in for the page's renderer: it returns an error for
+    a diagram that wouldn't draw, and the listener reports it as the page would.
+    `on_event(ws, event)` lets a test act as a listener would, mid-lecture.
+    """
+    events: list[dict] = []
+    t0 = time.monotonic()
+    async with aiohttp.ClientSession() as http:
+        async with http.ws_connect(url, max_msg_size=0) as ws:
+            hello = json.loads((await ws.receive()).data)
+            if start:
+                await ws.send_json({"cmd": "start"})
+            floor = False
+            async with asyncio.timeout(timeout_s):
+                async for m in ws:
+                    if m.type != aiohttp.WSMsgType.TEXT:
+                        continue
+                    d = json.loads(m.data)
+                    d["t"] = round(time.monotonic() - t0, 3)
+                    if "audio" in d:
+                        d["bytes"] = len(d.pop("audio")) * 3 // 4
+                    events.append(d)
+                    if draw_fails and d["type"] == "diagram" and (error := draw_fails(d["code"])):
+                        await ws.send_json({"cmd": "draw_failed", "id": d["id"], "error": error})
+                    if (draw_fails and d["type"] == "slide" and d["slide"]["diagram"]
+                            and (error := draw_fails(d["slide"]["diagram"]))):
+                        await ws.send_json({"cmd": "slide_failed", "revision": d["slide"]["revision"],
+                                            "error": error})
+                    if on_event and await on_event(ws, d) == "leave":
+                        break
+                    floor = floor or d["type"] == "floor"
+                    if d["type"] == "state" and (d["state"] == "ended" or (floor and d["state"] == "listening")):
+                        break
+    return {"hello": hello, "events": events}
+
+
+def slide_turns(events: list[dict]) -> list[dict]:
+    """What each slide was like to sit through."""
+    turns = []
+    starts = [i for i, e in enumerate(events) if e["type"] == "slide"]
+    for n, i in enumerate(starts):
+        end = starts[n + 1] if n + 1 < len(starts) else len(events)
+        mine = events[i:end]
+        clips = [(e["t"] - events[i]["t"], e["seconds"]) for e in mine if e["type"] == "sentence"]
+        turns.append({
+            "slide": events[i]["place"]["index"],
+            **metrics.playback(clips),
+            "sentences": len(clips),
+            "diagrams": sum(1 for e in mine if e["type"] == "diagram"),
+            "warnings": sum(1 for e in mine if e["type"] in ("warn", "unspoken")),
+            "stuck": sum(1 for e in mine if e["type"] == "state" and e["state"] == "stuck"),
+            "seq": [["SAY", e["text"]] if e["type"] == "sentence" else
+                    ["DRAW", e["code"]] if e["type"] == "diagram" else
+                    ["UNSPOKEN", e["text"]] if e["type"] == "unspoken" else ["WARN", e["message"]]
+                    for e in mine if e["type"] in ("sentence", "diagram", "unspoken", "warn")],
+        })
+    return turns
+
+
 async def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--url", default="http://127.0.0.1:8770/ws")
     ap.add_argument("--host", required=True, help="which host is behind the server, for the log")
     ap.add_argument("--model", default=None)
     ap.add_argument("--runs", type=int, default=5)
+    ap.add_argument("--attend", action="store_true", help="sit through a lecture on Professor's own server")
     args = ap.parse_args()
 
     run = log.run_id()
+    if args.attend:
+        record = await attend(args.url)
+        log.save_transcript(run, f"{args.host}-server", record)
+        for t in slide_turns(record["events"]):
+            log.record({"kind": "latency", "host": args.host, "path": "server", "model": args.model,
+                        "turn": "slide" if t["slide"] == 0 else "slide-later", "run": run, "n": 0,
+                        "metrics": {k: v for k, v in t.items() if k != "seq"}})
+            print(f"slide {t['slide'] + 1}  first audio {t['first_audio_s']}s  dead air {t['dead_air_s']}s  "
+                  f"{t['sentences']} sentences  {t['diagrams']} diagrams  {t['warnings']} warnings", flush=True)
+        unexplained = metrics.unexplained(record["events"])
+        print(f"{len(unexplained)} stretches where what was heard and the state shown disagreed"
+              + "".join(f"\n  {u}" for u in unexplained))
+        return
     for n in range(args.runs):
         turns = await session(args.url)
         log.save_transcript(run, f"{args.host}-prototype-{n}", [t for _, t in turns])
