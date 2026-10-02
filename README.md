@@ -29,7 +29,7 @@ picks lecture 3 up at the slide it stopped in, with its questions as they were. 
 ## Claude Code
 
 ```
-/plugin marketplace add /path/to/professor
+/plugin marketplace add willregelmann/professor
 /plugin install professor@professor
 ```
 

@@ -1,15 +1,20 @@
 {
   "name": "professor",
   "description": "Professor: live lectures given by AI agents.",
-  "owner": { "name": "Will Regelmann" },
+  "owner": {
+    "name": "Will Regelmann"
+  },
   "plugins": [
     {
       "name": "professor",
       "description": "Live lectures given by AI agents: a lecture that listens.",
       "version": "0.1.0",
-      "author": { "name": "Will Regelmann" },
+      "author": {
+        "name": "Will Regelmann"
+      },
       "source": ".",
-      "category": "productivity"
+      "category": "productivity",
+      "homepage": "https://github.com/willregelmann/professor"
     }
   ]
 }
