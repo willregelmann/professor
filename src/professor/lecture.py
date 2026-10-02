@@ -26,6 +26,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import datetime as dt
+import json
 import re
 import time
 from collections.abc import Awaitable, Callable
@@ -34,7 +36,7 @@ from dataclasses import dataclass, field
 from professor import prompts, showcheck, speech
 from professor.hosts.base import Host
 from professor.splitter import Draw, Mark, Say, Splitter
-from professor.store import SETTLED, Question, Slide, Store
+from professor.store import SETTLED, Question, Slide, Store, Utterance
 
 Subscriber = Callable[[dict], Awaitable[None]]
 
@@ -42,6 +44,7 @@ Subscriber = Callable[[dict], Awaitable[None]]
 READY, THINKING, SPEAKING, LISTENING, PAUSED, STUCK, ENDED = (
     "ready", "thinking", "speaking", "listening", "paused", "stuck", "ended")
 
+LONG_PAUSE_S = 120  # a pause longer than this gets a sentence picking the thread back up
 FLOOR = "End of the main line. The floor is open."
 HELD = "Stopped. Ask a question, or press Carry on."
 
@@ -80,6 +83,14 @@ class _Frame:
 
 
 @dataclass
+class _Resume:
+    """Where a lecture that stopped is picked up, and what its lecturer is told."""
+    index: int                # where on the main line to carry on; past the end means the floor
+    carry: list[Utterance]    # what the room had heard of that slide when the lecture stopped
+    note: str
+
+
+@dataclass
 class _Turn:
     """How a turn ended."""
     failure: str | None = None        # why the host couldn't be reached, if it couldn't
@@ -94,6 +105,7 @@ class Lecture:
                  speak: Callable[[str], Awaitable[bytes]] = speech.speak,
                  check: Callable[..., showcheck.Check] = showcheck.check,
                  pause_between_s: float = 0.9,
+                 resume_gap_s: float | None = None,
                  text_timeout_s: float = 60.0,
                  retry_delays_s: tuple[float, ...] = (2, 5, 15),
                  draw_report_grace_s: float = 0.4):
@@ -128,6 +140,10 @@ class Lecture:
         self._figure: dict | None = None  # a drawing made during the turn that's on screen now
         self._drawings: dict[str, _Drawing] = {}
         self._floor_open = False
+        self._paused_at: float | None = None
+        self._note: str | None = None     # something the lecturer is told at the start of its next turn
+        # A lecture that has been somewhere already is being picked up, not started.
+        self._resume = self._plan_resume(resume_gap_s) if store.path(lecture_id) else None
 
     # What listeners see
 
@@ -164,6 +180,7 @@ class Lecture:
             until = "the end" if index is None else f"slide {index + 1}"
         return {"id": q.id, "who": q.asker, "text": q.text, "state": q.state, "until": until,
                 "reason": q.reason, "reply": self.store.reply(q.id),
+                "corrections": [c.text for c in self.store.corrections(question_id=q.id)],
                 "slides": [slide.title for slide in self.store.made_for(q.id)]}
 
     async def _send(self, msg: dict) -> None:
@@ -197,6 +214,7 @@ class Lecture:
         if self._paused or self._state in (READY, ENDED):
             return
         self._paused = True
+        self._paused_at = time.monotonic()
         self._running.clear()
         self._pausing.set()
         await self._send({"type": "state", "state": PAUSED, "message": "", "held": False})
@@ -205,6 +223,9 @@ class Lecture:
         if not self._paused:
             return
         self._paused = False
+        paused_for = time.monotonic() - (self._paused_at or time.monotonic())
+        if paused_for >= LONG_PAUSE_S:
+            self._note = prompts.after_pause(paused_for)  # a recap sized to the gap, at its next turn
         self._pausing.clear()
         self._running.set()
         await self._send({"type": "state", "state": self._state, "message": self._message,
@@ -282,12 +303,22 @@ class Lecture:
     async def _run(self) -> None:
         await self._started.wait()
         try:
-            n, i, last = len(self._main), 0, None
+            n, i, last, carry = len(self._main), 0, None, []
+            if self._resume is not None:
+                i, carry, self._note = self._resume.index, self._resume.carry, self._resume.note
+                if not carry and 0 < i < n and self.store.questions(self.id, "heard"):
+                    # It stopped between slides with something still unanswered. That is
+                    # taken where it was asked, before the lecture moves on.
+                    await self._stand_at(i - 1)
+                    await self._attend()
+                    last = i - 1
             while True:
                 while i < n:
                     self._jump = None
-                    how = "start" if last is None else "next" if i == last + 1 else "jump"
-                    await self._give(i, how)
+                    how = ("resume" if self._resume is not None and not self._frames else
+                           "start" if last is None else "next" if i == last + 1 else "jump")
+                    await self._give(i, how, carry)
+                    carry = []
                     if self._jump is None:  # otherwise the slide was left for somewhere else
                         await self._come_back(self._main[i])
                         await self._attend()
@@ -296,6 +327,10 @@ class Lecture:
                     last, i = i, self._landing(i + 1)
                 # Reaching the end of the main line doesn't end the lecture. It opens the floor.
                 self._floor_open, self._jump = True, None
+                if not self._frames:
+                    # Picked up after the last slide had been given: the lecturer says it's back.
+                    await self._stand_at(n - 1)
+                    await self._take_turn(lambda: prompts.BACK_AT_THE_END)
                 await self._send({"type": "floor"})
                 await self._come_back(None)
                 while True:
@@ -316,12 +351,23 @@ class Lecture:
             await self._set_state(STUCK, f"The lecture has stopped: {exc or type(exc).__name__}")
             raise
 
+    async def _stand_at(self, index: int) -> None:
+        """Put a slide that has already been given back on the screen, without giving
+        it again, when a lecture is picked up after it."""
+        slide = self.store.slide(self._main[index].id)
+        place = {"index": index, "of": len(self._main), "detour": False}
+        self._frames = [_Frame(slide, self.store.arrive(self.id, slide, "resume"), place)]
+        self._slide, self._visit, self._place, self._figure = slide, self._frames[0].visit, place, None
+        await self._send(self._slide_message())
+
     def _landing(self, otherwise: int) -> int:
         """Where on the main line the lecture goes next: where the lecturer asked
         to carry on from, if it did, or else straight on."""
         return otherwise if self._jump is None else max(0, min(self._jump, len(self._main)))
 
-    async def _give(self, index: int, how: str) -> None:
+    async def _give(self, index: int, how: str, carry: list[Utterance] = []) -> None:
+        """Give a slide. `carry` is what the room heard of it before the lecture
+        stopped, when a lecture is picked up partway through one."""
         slide = self.store.slide(self._main[index].id)
         visit = self.store.arrive(self.id, slide, how)
         place = {"index": index, "of": len(self._main), "detour": False}
@@ -330,13 +376,13 @@ class Lecture:
         await self._send(self._slide_message())
 
         # Coming back to a slide that has already been given isn't giving it again.
-        before = self.store.said_on(self.id, slide.id, visit)
+        before = "" if carry else self.store.said_on(self.id, slide.id, visit)
         # A listener can stop the lecturer partway. Once the room has been
         # attended to, the slide is picked up from where it was cut off, unless
         # the room asked to move on.
         while (await self._take_turn(lambda: prompts.present(
                 self.deck, self.store.slide(slide.id), index, len(self._main),
-                self.store.utterances(self.id, visit), before=before))).stopped:
+                carry + self.store.utterances(self.id, visit), before=before))).stopped:
             await self._attend()
             if self._jump is not None:
                 return  # left unfinished, so not covered
@@ -371,6 +417,90 @@ class Lecture:
             again = await self._turn_until_heard(lambda: prompts.redraw(*failed), question)
             turn.marks += again.marks
             turn.stopped = again.stopped
+
+    async def _correct(self, text: str, question: Question | None) -> None:
+        """The lecturer found something wrong. The correction is kept against the
+        slide it concerns: the one the question was asked on, or the one being given."""
+        if not text.strip():
+            return
+        slide = (self.store.moment(question)[0] if question else None) or self._frames[0].slide
+        self.store.correct(slide.id, text.strip(), lecture_id=self.id, question_id=question.id if question else None)
+        if question:
+            await self._send({"type": "question", "question": self._question(self.store.question(question.id))})
+
+    # Picking a lecture back up
+
+    def _plan_resume(self, gap_s: float | None) -> _Resume:
+        """Work out where a stopped lecture is picked up, from what it kept."""
+        row = self.store.lecture(self.id)
+        if row["state"] == ENDED:
+            raise ValueError(f"lecture {self.id} has ended. Giving the deck again is a new lecture.")
+        path = self.store.path(self.id)
+        now = [s.id for s in self._main]
+        then = json.loads(row["main_line"]) if row["main_line"] else now
+        on_line = [v for v in path if v["how"] in ("start", "next", "jump", "resume")]
+        last = on_line[-1]
+
+        # Where to carry on: the slide it stopped in, the one after a slide it had
+        # finished, or the nearest slide still there if that one has gone.
+        changes, carry = [], []
+        if last["slide_id"] in now:
+            index = now.index(last["slide_id"]) + (1 if last["covered"] else 0)
+            if not last["covered"]:
+                # Everything the room has heard of this slide, however many times the lecture stopped in it.
+                unfinished = {v["visit_id"] for v in on_line
+                              if v["slide_id"] == last["slide_id"] and not v["covered"]}
+                carry = [u for u in self.store.utterances(self.id)
+                         if u.visit_id in unfinished and u.question_id is None]
+        else:
+            later = [sid for sid in then[then.index(last["slide_id"]) + 1:] if sid in now] \
+                if last["slide_id"] in then else []
+            index = now.index(later[0]) if later else len(now)
+            gone = self.store.slide(last["slide_id"]).title
+            where = f"slide {index + 1}, \"{self._main[index].title}\"" if index < len(now) else "the end"
+            changes.append(f"The slide the lecture stopped on, \"{gone}\", has been taken out of the deck, "
+                           f"so the lecture resumes at the nearest point that is left: {where}.")
+
+        # What else changed in the deck, that the room should be told.
+        given = [v for v in on_line if v["covered"]]
+        for v in given:
+            if v["slide_id"] in now and self.store.slide(v["slide_id"]).revision_id != v["slide_revision_id"]:
+                changes.append(f"The slide \"{self.store.slide(v['slide_id']).title}\", which was already "
+                               "given, has been revised since.")
+        for sid in then:
+            if sid not in now and sid != last["slide_id"]:
+                changes.append(f"The slide \"{self.store.slide(sid).title}\" has been taken out of the deck.")
+        for sid in now:
+            if sid not in then:
+                changes.append(f"A slide has been added: \"{self.store.slide(sid).title}\".")
+
+        # Questions that were mid-air when it stopped are heard again, not lost.
+        for q in self.store.questions(self.id):
+            if q.state in ("answering", "waiting"):
+                self.store.set_question(q.id, "heard")
+
+        if gap_s is None:
+            stopped = self.store.last_activity(self.id)
+            gap_s = (dt.datetime.now(dt.timezone.utc) - stopped).total_seconds() if stopped else 0.0
+        said = {v["visit_id"]: " ".join(u.text for u in self.store.utterances(self.id, v["visit_id"])
+                                        if u.kind == "said" and not u.failed and u.question_id is None)
+                for v in on_line}
+        note = prompts.resume(
+            gap_s,
+            given=[(self.store.slide(v["slide_id"]).title, said[v["visit_id"]]) for v in on_line
+                   if v["covered"] or said[v["visit_id"]]],
+            questions=[(q, self.store.reply(q.id)) for q in self.store.questions(self.id)],
+            changes=changes,
+            stopped_in=next((u.text for u in reversed(carry) if u.kind == "said" and not u.failed), None))
+
+        # Someone who opens the page before it's picked up sees where it stopped.
+        if index < len(now):
+            self._slide, self._place = self._main[index], {"index": index, "of": len(now), "detour": False}
+        elif now:
+            self._slide, self._place = self._main[-1], {"index": len(now) - 1, "of": len(now), "detour": False}
+        self._message = f"This lecture stopped {prompts.ago(gap_s)} ago. Press Start to pick it up."
+        self.store.set_state(self.id, READY, self._message)
+        return _Resume(index, carry, note)
 
     # Moving
 
@@ -524,6 +654,8 @@ class Lecture:
     async def _turn(self, prompt: str, question: Question | None = None) -> _Turn:
         """One turn of the host, heard through to the end, or until a listener stops it."""
         qid = question.id if question else None
+        if self._note:
+            prompt, self._note = self._note + "\n\n" + prompt, None
         if not self._instructed:
             prompt = prompts.standing(self.deck, self._main) + "\n\n" + prompt
         items: asyncio.Queue = asyncio.Queue()   # sentences, drawings and marks, as written
@@ -591,6 +723,8 @@ class Lecture:
                 if isinstance(item, Mark):
                     if item.kind == "go":
                         await self._go(item.body)
+                    elif item.kind == "correct":
+                        await self._correct(item.body, question)
                     else:
                         turn.marks.append(item)
                     continue

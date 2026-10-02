@@ -68,6 +68,16 @@ Put a claim's limits in the notes too. If you aren't sure of something, say so i
 
 A deck improves between lectures. `lecture` shows which slides were covered and which were skipped. `questions` shows what the listeners asked, on which slide, and what the lecturer said. A question that keeps coming up on the same slide means its notes are missing something: revise the slide with `write_slide` (only the fields you pass change), or add a slide. The main line changes only when you change it.
 
+**Corrections.** When a listener catches a mistake, the lecturer keeps a correction against the slide. `deck` shows how many are open on each slide, and `slide` shows what they say. Deal with every open one, on purpose:
+
+- Check it against the source. A listener, or the lecturer, can be wrong too.
+- If it's right, fix the slide with `write_slide`, then `correct` with the correction's number and `settle: "applied"`.
+- If the slide was right after all, `correct` with `settle: "set_aside"` and `why`.
+
+You can also keep a correction yourself with `correct`, giving the slide and what's wrong, when you notice something you can't fix yet. A correction is never deleted.
+
+Slides made up during a lecture are listed under `beside`, each with the question it was made for. If one earned its place, put it on the main line with `arrange`, and give it proper notes with `write_slide` first.
+
 ## If the tools aren't there
 
 If the professor tools aren't available, the plugin's runtime isn't installed. Tell the user to run the plugin's `bin/professor install`, and don't try to write a deck some other way.

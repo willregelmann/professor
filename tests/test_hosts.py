@@ -226,7 +226,7 @@ async def test_the_lecturers_two_tools_exist_only_for_a_lecture_that_speaks_thro
     lecturer = mcp_server.Server(":memory:", lecturer=True).handle({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
     names = lambda reply: [t["name"] for t in reply["result"]["tools"]]
     assert "say" not in names(plain) and "listen" not in names(plain)
-    assert names(lecturer)[-2:] == ["listen", "say"]
+    assert names(lecturer)[-2:] == ["listen", "say"] and "correct" in names(plain)
 
 
 async def test_say_and_listen_reach_the_lecture_through_the_tool_server(monkeypatch):

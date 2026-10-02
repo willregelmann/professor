@@ -39,7 +39,7 @@ One SQLite file, e.g. `~/.professor/professor.db`. Only the core writes to it, f
 | [Deck](invariants/primitives/DECK.md) | `decks`: id, subject, audience, intended length, background (what the lecturer should stay inside), created_at |
 | [Slide](invariants/primitives/SLIDE.md) | `slides`: id, deck_id, position on the main line (null when beside it), anchor slide and question it was made for (when made up), origin (prepared / made up). `slide_revisions`: slide_id, title, what's shown (text, diagram, code), notes, sources, intended length, why it couldn't be shown (once a page has tried), created_at. Only ever added to; the latest is current |
 | [Lecture](invariants/primitives/LECTURE.md) | `lectures`: id, deck_id, host, host session handle, state, place, detour stack. `visits`: lecture_id, slide revision, arrived_at, how it got there, covered or skipped. `utterances`: lecture_id, visit, said or drawn, the sentence or the drawing, why it wasn't heard or seen (if it wasn't), ts. Only ever added to |
-| [Question](invariants/primitives/QUESTION.md) | `questions`: id, lecture_id, asker, text, the visit and utterance it was asked at, state (waiting / heard / being answered / put off / answered / declined), put off until, why it was declined. Its reply is the utterances that carry its id. Still to come: the slide made for it, and `corrections`: slide_id, question_id, text, applied / set aside / open |
+| [Question](invariants/primitives/QUESTION.md) | `questions`: id, lecture_id, asker, text, the visit and utterance it was asked at, state (waiting / heard / being answered / put off / answered / declined), put off until, why it was declined. Its reply is the utterances that carry its id, and a slide made for it carries its id too. `corrections`: slide_id, lecture_id, question_id, text, state (open / applied / set aside), why. Never deleted |
 
 The invariants only require a lecture to keep its path. This plan also keeps the words (`utterances`), because the page already receives every sentence for captions, the Q&A has to show answers in writing, and a different lecturer resuming needs more than a list of slide numbers.
 
@@ -65,6 +65,8 @@ Rules the core enforces without the agent's help:
 - The lecture is a stack: its place on the main line, then any detours. A detour left open when a turn ends is closed for the lecturer, the screen goes back to where the lecture left, and its next turn starts by being told so.
 - A made-up slide is drawn in the show check before it's shown. One that fails isn't shown or kept, and the lecturer gets one more turn to draw it again.
 - A listener moves the lecture by asking in the chat. The lecturer does the moving, so every move comes with words.
+- A lecture that has been somewhere is picked up, not started. It carries on at the slide it stopped in, or after the last one it finished, with a fresh host session that is handed the record: what was said on each slide, each question and what became of it, and what has changed in the deck. The gap decides what is said out loud: nothing under two minutes, one sentence under an hour, a recap beyond that.
+- A question that was being answered when the lecture stopped is heard again, and taken before the lecture moves on.
 - A stop from a listener cancels the turn, silences every page at once, and records the sentence that was cut off and what was written but not reached. The lecture then waits for a question or for "Carry on", and the lecturer is handed the cut-off thought when the slide is picked back up.
 
 ### Speaking, drawing and marking
@@ -75,6 +77,7 @@ Carried over from the prototype: plain spoken prose with a fenced block for anyt
 | ` ```mermaid ` | Draws it when the speech reaches it |
 | ` ```later ` with a slide number, or `end` | Puts the question being answered off until then |
 | ` ```decline ` with a reason | Declines the question being answered, and shows the reason |
+| ` ```correct ` with what was wrong and what is right | Keeps a correction against the slide the question was about |
 | ` ```go ` with a slide number | Shows that slide as a detour, at that point in the speech |
 | ` ```go ` with `return` | Comes back from the detour it's in |
 | ` ```go ` with `next`, or `from` and a number | Carries the lecture on from the next slide, or from that one, once the turn ends |
@@ -223,6 +226,13 @@ Each adapter does four things: start a turn, yield text as it's produced, cancel
 - **Exit:**
   - a lecture started by Wren is resumed through the Agent SDK at the right slide, with its put-off questions still open;
   - behaviour judges pass on "recaps after a long gap", "doesn't recap after a short one" and "doesn't claim to remember what wasn't kept".
+
+- **Result (2026-10-01, `python -m bench.resume_run`, `/test:run resume-behaviour`):** exit met.
+  - **A lecture started by Wren is resumed through the Agent SDK at the right slide, with its put-off question still open:** Wren gave the first slide, put a question off to slide 3, and the server was taken down partway through slide 2. Claude picked the lecture up, twice, from copies of the store. Both times it resumed at slide 2 without giving slide 1 again, finished the deck, came back to the put-off question after slide 3, and left every question settled.
+  - **The behaviour judge passed all four assertions:** it recapped after a gap of a month ("Last time, we got as far as the second slide…"); it carried straight on mid-thought after a gap of seconds, with no greeting; asked to repeat a story that was never told, it said its record of the lecture didn't have it and that it might not be the lecturer who gave that part; and it didn't present the first slide again.
+  - **By test:** resuming mid-slide, between slides, at the end, and more than once; a question that was being answered at the stop; a deck revised, added to or cut while the lecture was stopped; an ended lecture refusing to resume; and a long pause.
+  - **Corrections:** by test, a correction marked by the lecturer is kept against the slide the question was about, shown to whoever revises the deck, and settled as applied or set aside. In one real lecture with a deliberate mistake in the notes, Claude said the notes were wrong when a listener asked, and kept the correction against the slide.
+  - Not built: continuing the same host session on resume. Every resume starts a fresh session and hands it the record, so the same lecturer and a different one are treated alike.
 
 ### Deferred
 - Spoken questions

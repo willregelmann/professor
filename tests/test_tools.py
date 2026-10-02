@@ -148,7 +148,7 @@ def test_the_tools_are_served_over_mcp(tmp_path):
     assert [r["id"] for r in replies] == [1, 2, 3, 4, 5, None]
     assert replies[0]["result"]["serverInfo"]["name"] == "professor"
     assert [tool["name"] for tool in replies[1]["result"]["tools"]] == [
-        "deck", "slide", "lecture", "questions", "describe", "write_slide", "arrange"]
+        "deck", "slide", "lecture", "questions", "describe", "write_slide", "correct", "arrange"]
     assert all(tool["inputSchema"]["type"] == "object" for tool in replies[1]["result"]["tools"])
     assert replies[2]["result"]["isError"] is False
     assert json.loads(replies[2]["result"]["content"][0]["text"])["subject"] == "Over MCP"

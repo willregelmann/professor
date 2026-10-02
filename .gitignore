@@ -31,3 +31,5 @@ bench/data/
 .claude/tests/*/deck.md
 .claude/tests/*/transcript.md
 test-results.xml
+.claude/tests/*/first-part.md
+.claude/tests/*/resumed-*.md

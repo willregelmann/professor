@@ -101,6 +101,21 @@ ALTER TABLE slide_revisions ADD COLUMN show_checked INTEGER NOT NULL DEFAULT 0;
 -- The question a made-up slide was made for.
 ALTER TABLE slides ADD COLUMN question_id INTEGER REFERENCES questions(id);
 """,
+    5: """
+-- The main line as it stood when the lecture began, so a resumed lecture can say what changed.
+ALTER TABLE lectures ADD COLUMN main_line TEXT;
+CREATE TABLE corrections (
+    id          INTEGER PRIMARY KEY,
+    slide_id    INTEGER NOT NULL REFERENCES slides(id),
+    lecture_id  INTEGER REFERENCES lectures(id),
+    question_id INTEGER REFERENCES questions(id),
+    text        TEXT NOT NULL,
+    state       TEXT NOT NULL DEFAULT 'open' CHECK (state IN ('open', 'applied', 'set_aside')),
+    why         TEXT NOT NULL DEFAULT '',     -- why it was applied or set aside
+    created_at  TEXT NOT NULL,
+    settled_at  TEXT
+);
+""",
 }
 VERSION = max(MIGRATIONS)
 
@@ -165,6 +180,17 @@ class Utterance:
     text: str
     failed: str | None
     question_id: int | None = None
+
+
+@dataclass(frozen=True)
+class Correction:
+    id: int
+    slide_id: int
+    lecture_id: int | None
+    question_id: int | None
+    text: str
+    state: str
+    why: str
 
 
 @dataclass(frozen=True)
@@ -334,8 +360,29 @@ class Store:
     # Lectures
 
     def create_lecture(self, deck_id: int, host: str) -> int:
-        return self._insert("INSERT INTO lectures (deck_id, host, state, created_at) VALUES (?, ?, 'ready', ?)",
-                            deck_id, host, _now())
+        main_line = json.dumps([s.id for s in self.main_line(deck_id)])
+        return self._insert(
+            "INSERT INTO lectures (deck_id, host, state, main_line, created_at) VALUES (?, ?, 'ready', ?, ?)",
+            deck_id, host, main_line, _now())
+
+    def set_host(self, lecture_id: int, host: str) -> None:
+        """A different lecturer has picked the lecture up."""
+        with self.db:
+            self.db.execute("UPDATE lectures SET host = ?, host_session = '' WHERE id = ?", (host, lecture_id))
+
+    def all_lectures(self) -> list[dict]:
+        return [dict(row) for row in self.db.execute("SELECT * FROM lectures ORDER BY id")]
+
+    def last_activity(self, lecture_id: int) -> dt.datetime | None:
+        """When the lecture last showed or said anything."""
+        row = self.db.execute(
+            "SELECT MAX(at) FROM (SELECT MAX(arrived_at) AS at FROM visits WHERE lecture_id = ? "
+            "UNION ALL SELECT MAX(at) FROM utterances WHERE lecture_id = ?)", (lecture_id, lecture_id)).fetchone()
+        return dt.datetime.fromisoformat(row[0]) if row and row[0] else None
+
+    def shown_then(self, visit_id: int) -> int:
+        """The revision of the slide a visit actually showed."""
+        return self.db.execute("SELECT slide_revision_id FROM visits WHERE id = ?", (visit_id,)).fetchone()[0]
 
     def lecture(self, lecture_id: int) -> dict:
         row = self.db.execute("SELECT * FROM lectures WHERE id = ?", (lecture_id,)).fetchone()
@@ -454,6 +501,39 @@ class Store:
             "WHERE u.lecture_id = ? AND r.slide_id = ? AND v.id < ? AND u.kind = 'said' "
             "AND u.failed IS NULL AND u.question_id IS NULL ORDER BY u.id",
             (lecture_id, slide_id, before_visit)))
+
+    # Corrections
+
+    _CORRECTION = "SELECT id, slide_id, lecture_id, question_id, text, state, why FROM corrections"
+
+    def correct(self, slide_id: int, text: str, *, lecture_id: int | None = None,
+                question_id: int | None = None) -> Correction:
+        """Keep a correction against a slide, for whoever next revises the deck."""
+        correction_id = self._insert(
+            "INSERT INTO corrections (slide_id, lecture_id, question_id, text, created_at) VALUES (?, ?, ?, ?, ?)",
+            slide_id, lecture_id, question_id, text, _now())
+        return self.correction(correction_id)
+
+    def correction(self, correction_id: int) -> Correction:
+        row = self.db.execute(self._CORRECTION + " WHERE id = ?", (correction_id,)).fetchone()
+        if row is None:
+            raise KeyError(f"no correction {correction_id}")
+        return Correction(**row)
+
+    def corrections(self, *, slide_id: int | None = None, question_id: int | None = None) -> list[Correction]:
+        column, value = ("slide_id", slide_id) if slide_id is not None else ("question_id", question_id)
+        return [Correction(**row) for row in
+                self.db.execute(self._CORRECTION + f" WHERE {column} = ? ORDER BY id", (value,))]
+
+    def settle_correction(self, correction_id: int, state: str, why: str = "") -> Correction:
+        """A correction is applied or set aside on purpose. It is never deleted."""
+        if state not in ("applied", "set_aside"):
+            raise ValueError("a correction is settled as applied or set_aside")
+        self.correction(correction_id)
+        with self.db:
+            self.db.execute("UPDATE corrections SET state = ?, why = ?, settled_at = ? WHERE id = ?",
+                            (state, why, _now(), correction_id))
+        return self.correction(correction_id)
 
     def moment(self, question: Question) -> tuple[Slide | None, str]:
         """The moment a question was asked: the slide as it was shown then, and

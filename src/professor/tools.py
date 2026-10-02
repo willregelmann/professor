@@ -76,6 +76,19 @@ SCHEMAS = [
          "sources": {"type": "array", "items": {"type": "string"},
                      "description": "Where the slide's claims come from, e.g. \"src/server.py:42\"."},
          "seconds": {"type": "integer", "description": "Roughly how long to speak on this slide."}}}},
+    {"name": "correct",
+     "description": "Keep a correction against a slide, or settle one. To keep one, give the slide and what "
+                    "is wrong and what is right. Corrections are also kept by lecturers when a listener "
+                    "catches a mistake; the slide tool lists them. To settle one after you have dealt with "
+                    "it, give the correction's number and how it was settled: \"applied\" once the slide "
+                    "has been revised, or \"set_aside\" if the slide was right after all, with why. A "
+                    "correction is never deleted.",
+     "parameters": {"type": "object", "properties": {
+         "slide": {"type": "integer", "description": "The slide a new correction is about."},
+         "text": {"type": "string", "description": "What is wrong on the slide, and what is right."},
+         "correction": {"type": "integer", "description": "The correction to settle."},
+         "settle": {"type": "string", "enum": ["applied", "set_aside"]},
+         "why": {"type": "string", "description": "Why it was set aside, or what was changed."}}}},
     {"name": "arrange",
      "description": "Set a deck's main line: the slides given, in the order given, if nobody interrupts. "
                     "Any slide left out is kept beside the main line, not deleted.",
@@ -124,6 +137,8 @@ class Tools:
         shows = [what for what in ("text", "diagram", "code", "math") if getattr(slide, what)]
         line = {"slide": slide.id, "title": slide.title, "seconds": slide.seconds,
                 "shows": shows, "sources": len(slide.sources), "show": _show(slide)}
+        if still_open := sum(1 for c in self.store.corrections(slide_id=slide.id) if c.state == "open"):
+            line["open_corrections"] = still_open  # read the slide to see them
         if slide.origin == "made_up":
             # Made up during a lecture: it stays beside the main line until someone puts it there.
             line["made_up"] = {"beside_slide": slide.anchor_slide_id,
@@ -149,7 +164,13 @@ class Tools:
                 "on_main_line": s.position is not None, "number": None if s.position is None else s.position + 1,
                 "origin": s.origin, "title": s.title, "text": s.text, "diagram": s.diagram, "code": s.code,
                 "code_language": s.code_language, "math": s.math, "notes": s.notes, "sources": s.sources,
-                "seconds": s.seconds, "show": _show(s)}
+                "seconds": s.seconds, "show": _show(s),
+                "corrections": [self._correction_line(c) for c in self.store.corrections(slide_id=s.id)]}
+
+    def _correction_line(self, c) -> dict:
+        asked = self.store.question(c.question_id).text if c.question_id else None
+        return {"correction": c.id, "text": c.text, "state": c.state, "why": c.why,
+                "from_lecture": c.lecture_id, "after_question": asked}
 
     def _latest_lecture(self, lecture: int | None, deck: int | None = None) -> dict:
         if lecture is not None:
@@ -229,6 +250,21 @@ class Tools:
             out["warning"] = (f"Saved, but it could not be checked that this slide can be shown: {result.error}. "
                               "Check the diagram and equation by eye, or prepare where a browser is installed.")
         return out
+
+    def _correct(self, slide: int | None = None, text: str | None = None, correction: int | None = None,
+                 settle: str | None = None, why: str = "") -> dict:
+        if correction is not None:
+            if settle not in ("applied", "set_aside"):
+                raise ToolError("to settle a correction, say how: \"applied\" or \"set_aside\"")
+            if settle == "set_aside" and not why.strip():
+                raise ToolError("a correction that is set aside needs the reason why")
+            done = self.store.settle_correction(correction, settle, why.strip())
+            return self._slide(done.slide_id)
+        if slide is None or not (text or "").strip():
+            raise ToolError("a new correction needs the slide it's about and what is wrong and right")
+        self.store.slide(slide)
+        self.store.correct(slide, text.strip())
+        return self._slide(slide)
 
     def _arrange(self, deck: int, main_line: list[int]) -> dict:
         self.store.deck(deck)

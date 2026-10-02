@@ -31,11 +31,15 @@ class Room:
     """A deck, a lecture on the real server, and a way to sit in on it."""
 
     def __init__(self, replies, *, speak=None, slides=None, host=None, heartbeat_s=30, check=unchecked,
-                 **lecture_options):
-        self.store = Store()
-        self.deck = self.store.create_deck("How it fits together", audience="the test suite", minutes=1)
-        for kwargs in slides or [{"title": "One"}, {"title": "Two"}, {"title": "Three"}]:
-            self.store.add_slide(self.deck.id, **{"notes": "notes", **kwargs})
+                 resume=None, **lecture_options):
+        """`resume` is a room whose lecture stopped: this one picks that lecture up."""
+        self.store = resume.store if resume else Store()
+        if resume:
+            self.deck = resume.deck
+        else:
+            self.deck = self.store.create_deck("How it fits together", audience="the test suite", minutes=1)
+            for kwargs in slides or [{"title": "One"}, {"title": "Two"}, {"title": "Three"}]:
+                self.store.add_slide(self.deck.id, **{"notes": "notes", **kwargs})
         self.host = host or FakeHost(replies, chars_per_s=4000)
         self.spoken: list[str] = []
 
@@ -45,7 +49,7 @@ class Room:
 
         options = {"pause_between_s": 0.05, "retry_delays_s": (0.05, 0.05), "draw_report_grace_s": 0.1,
                    "text_timeout_s": 2.0, **lecture_options}
-        self.lecture_id = self.store.create_lecture(self.deck.id, "fake")
+        self.lecture_id = resume.lecture_id if resume else self.store.create_lecture(self.deck.id, "fake")
         self.lecture = Lecture(self.store, self.lecture_id, self.host, speak=speak or default_speak,
                                check=check, **options)
         self.server = TestServer(make_app(self.lecture, heartbeat_s=heartbeat_s))

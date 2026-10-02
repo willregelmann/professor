@@ -32,7 +32,10 @@ STANDING = (
     "asks, in a few words. Then do exactly one of three things.\n"
     "Answer it, briefly. If it asks whether something you said is right, check what you said against "
     "your notes rather than defending it, and say so plainly if you were wrong. If you do not know, "
-    "say \"I don't know\".\n"
+    "say \"I don't know\". If you find you WERE wrong, or that a slide is, say so out loud and then "
+    "write a block that starts with a line ```correct, holds in one or two sentences what was wrong "
+    "and what is right, and ends with a line ```. It is kept against the slide for whoever revises "
+    "the deck.\n"
     "Or put it off: if a later slide covers it, say out loud that you will come to it and when, and "
     "then write a block that starts with a line ```later, holds the number of that slide (or the word "
     "end), and ends with a line ```. You will be handed the question again when the lecture gets there.\n"
@@ -180,6 +183,67 @@ def come_back(question: Question, words_then: str, *, at_end: bool) -> str:
              "have just presented already answered it, say so in a sentence or two and do not go over it "
              "again. Otherwise answer it briefly (under 30 seconds of speech, so at most about 75 words). It cannot be put off again.")
     return text
+
+
+def ago(seconds: float) -> str:
+    """A gap in words: "about 20 seconds", "about 3 days"."""
+    for size, name in ((86400, "day"), (3600, "hour"), (60, "minute")):
+        if seconds >= size:
+            n = round(seconds / size)
+            return f"about {n} {name}{'' if n == 1 else 's'}"
+    n = max(1, round(seconds))
+    return f"about {n} second{'' if n == 1 else 's'}"
+
+
+def _clip(text: str, words: int) -> str:
+    parts = text.split()
+    return text if len(parts) <= words else " ".join(parts[:words]) + " …"
+
+
+def resume(gap_s: float, *, given: list[tuple[str, str]], questions: list[tuple[Question, str]],
+           changes: list[str], stopped_in: str | None) -> str:
+    """A lecture that stopped is being picked up. The lecturer may not be the one
+    who gave the first part, so it's handed what the lecture kept, and nothing else."""
+    record = "\n".join(f"- Slide \"{title}\": {_clip(said, 90) or '(nothing was said)'}" for title, said in given)
+    asked = "\n".join(
+        f"- {_asker(q)} asked: \"{q.text}\" ({q.state.replace('_', ' ')})" + (f" You said: {_clip(reply, 60)}" if reply else "")
+        for q, reply in questions)
+    text = (f"RESUMING. This lecture was started earlier and stopped {ago(gap_s)} ago. You are picking it up "
+            "now. You may or may not be the lecturer who gave the first part. Either way, the record below is "
+            "ALL that is known of it. Work from the record, and never claim to remember anything it does not "
+            "show. If the room asks about something earlier that the record does not show, say that your "
+            "record of the lecture does not have it, and ask them to remind you if it matters.\n\n"
+            f"THE RECORD SO FAR.\n{record or '- Nothing had been said yet.'}")
+    if asked:
+        text += f"\nQuestions so far:\n{asked}"
+    if changes:
+        text += ("\n\nTHE DECK HAS CHANGED since the lecture stopped. Tell the room what changed, in a "
+                 "sentence:\n" + "\n".join(f"- {c}" for c in changes))
+    if gap_s < 120:
+        text += ("\n\nThe gap was short. Do NOT recap and do not greet the room again. Carry straight on as "
+                 "if you had paused for breath.")
+    elif gap_s < 3600:
+        text += ("\n\nBegin with ONE sentence saying that you are picking the lecture back up and where. Do "
+                 "not recap what was covered.")
+    else:
+        text += ("\n\nIt has been a while, so begin with a recap sized to the gap: \"last time, we got as far "
+                 "as…\", in two to four sentences drawn from the record, naming what was covered and any "
+                 "question still open. Then carry on.")
+    if stopped_in:
+        text += (f"\n\nThe lecture stopped while you were in the middle of a slide. The last thing on the "
+                 f"record is: \"{stopped_in}\" It may have been cut off partway, so start again from the "
+                 "beginning of that thought, never mid-sentence.")
+    return text
+
+
+BACK_AT_THE_END = ("The lecture had already reached the end of its slides when it stopped. Say that you are "
+                   "back and that the floor is open for questions. Do not present a slide.")
+
+
+def after_pause(gap_s: float) -> str:
+    """The lecture was paused for a good while and has been started again."""
+    return (f"The lecture was paused for {ago(gap_s)} just now. Begin by picking the thread back up in one "
+            "sentence, saying where you had got to.")
 
 
 def close_detour(index: int, title: str) -> str:

@@ -26,6 +26,7 @@ Tools are grouped by what they're allowed to do. Exact inputs and outputs belong
 | `describe` | Says what a deck is about, who it's for and how long it should run |
 | `write_slide` | Makes a slide or revises one, and reports whether it can be shown |
 | `arrange` | Orders the main line, or moves a slide onto it or off it |
+| `correct` | Keeps a correction against a slide, or settles one as applied or set aside |
 
 **Lecture**
 
@@ -34,7 +35,7 @@ Tools are grouped by what they're allowed to do. Exact inputs and outputs belong
 | `go` | Moves the lecture: next, back, to a slide, off on a detour, or back from one |
 | `take` / `put_off` / `decline` | Settles what becomes of a [question](../primitives/QUESTION.md). Putting off and declining can also be marked in speech |
 | `ask` | Asks the room something |
-| `correct` | Keeps a correction against a slide |
+| `correct` | Keeps a correction against a slide. It can also be marked in speech |
 | `end` | Ends the lecture |
 
 ## Invariants
